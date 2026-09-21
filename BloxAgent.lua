@@ -266,15 +266,77 @@ end
 
 loadFromWorkspace()
 
--- ==================== [ 4. UNC 相容層 (HTTP & WebSocket) ] ====================
-local httpRequest = request or http_request or (syn and syn.request) or (http and http.request) or (fluxus and fluxus.request)
-local wsConnect = (WebSocket and (WebSocket.connect or WebSocket.Connect)) or (syn and syn.websocket and syn.websocket.connect)
+-- ==================== [ 4. sUNC 全環境相容層 (Universal sUNC Adapter) ] ====================
+local function resolveHttpRequest()
+    if typeof(request) == "function" then return request end
+    if typeof(http_request) == "function" then return http_request end
+    if syn and typeof(syn.request) == "function" then return syn.request end
+    if http and typeof(http.request) == "function" then return http.request end
+    if fluxus and typeof(fluxus.request) == "function" then return fluxus.request end
+    if krnl and typeof(krnl.request) == "function" then return krnl.request end
+    return nil
+end
+
+local function resolveWsConnect()
+    if WebSocket and typeof(WebSocket.connect) == "function" then return WebSocket.connect end
+    if WebSocket and typeof(WebSocket.Connect) == "function" then return WebSocket.Connect end
+    if syn and syn.websocket and typeof(syn.websocket.connect) == "function" then return syn.websocket.connect end
+    if krnl and krnl.websocket and typeof(krnl.websocket.connect) == "function" then return krnl.websocket.connect end
+    return nil
+end
+
+local rawHttpRequest = resolveHttpRequest()
+local wsConnect = resolveWsConnect()
 local guiParent = (gethui and gethui()) or game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
 
 local activeWebSocket = nil
 local lastWatchdogHeartbeat = os.clock()
 
-logInfo("UNC", string.format("相容性檢測: httpRequest = %s, wsConnect = %s", httpRequest and "可用" or "缺失", wsConnect and "可用" or "缺失"))
+-- sUNC 萬能請求分發器 (自動適配大小寫命名與不同 Executor 的返回值結構)
+local function universalHttpRequest(url, method, headers, body)
+    if not rawHttpRequest then
+        return false, nil, "當前 Executor 未提供任何 sUNC 網路請求函數 (request / http_request)"
+    end
+
+    local payload = {
+        Url = url,
+        url = url,
+        Method = method or "GET",
+        method = method or "GET",
+        Headers = headers or {},
+        headers = headers or {},
+        Body = body or "",
+        body = body or ""
+    }
+
+    local ok, res = pcall(rawHttpRequest, payload)
+    if not ok then
+        return false, nil, tostring(res or "Executor 網路調用崩潰")
+    end
+
+    if typeof(res) ~= "table" then
+        return false, nil, "Executor 請求回傳格式異常: " .. tostring(res)
+    end
+
+    local statusCode = res.StatusCode or res.statusCode or res.Status or res.status_code or res.status or 0
+    local resBody = res.Body or res.body or ""
+    local resHeaders = res.Headers or res.headers or {}
+
+    return true, {
+        StatusCode = tonumber(statusCode) or 0,
+        Body = tostring(resBody),
+        Headers = resHeaders
+    }, nil
+end
+
+local function doesModelSupportBidiWS(modelName)
+    if not modelName or typeof(modelName) ~= "string" then return false end
+    local m = modelName:lower()
+    -- Google AI Studio 的 Bidi WebSocket (BidiGenerateContent) 僅支援 2.0-flash-exp 或 realtime 系列
+    return m:find("2.0-flash-exp", 1, true) ~= nil or m:find("realtime", 1, true) ~= nil
+end
+
+logInfo("UNC", string.format("sUNC 檢測: HTTP 函數 = %s, WebSocket 函數 = %s", rawHttpRequest and "可用" or "缺失", wsConnect and "可用" or "缺失"))
 
 -- ==================== [ 5. AgentEnv 核心模組 ] ====================
 local AgentEnv = {
@@ -1317,10 +1379,10 @@ end
 
 local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
     local cleanModel = (modelName:gsub("^models/", ""))
-    -- 同時在 URL 與 Headers 攜帶 key，確保各種 Executor 的相容性
+    -- 雙重認證：同時在 URL 參數 (?key=) 與 Header (x-goog-api-key) 傳遞，保證 sUNC 最大相容
     local endpoint = string.format("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cleanModel, apiKey)
 
-    logInfo("HTTP", "正在發起 HTTP 降級請求: " .. cleanModel)
+    logInfo("HTTP", "正在發起 sUNC HTTP 請求至: " .. cleanModel)
 
     table.insert(targetSession.history, { role = "user", parts = { { text = userPrompt } } })
     while #targetSession.history > (Config.MAX_HISTORY * 2) do
@@ -1334,61 +1396,53 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
         generationConfig = { temperature = 0.1, maxOutputTokens = 8192 }
     }
 
-    if not httpRequest then
-        logError("HTTP", "當前環境找不到可用的 httpRequest 函數")
-        return false, "當前 Executor 不支援 HTTP 請求 (缺少 request 函數)", "", ""
-    end
-
-    local reqCompleted = false
-    local reqOk = false
-    local response = nil
-    local netErr = nil
     local encodedBody = HttpService:JSONEncode(payload)
+    local headers = {
+        ["Content-Type"] = "application/json",
+        ["x-goog-api-key"] = apiKey
+    }
 
-    task.spawn(function()
-        reqOk, response = pcall(function()
-            return httpRequest({
-                Url = endpoint,
-                Method = "POST",
-                Headers = {
-                    ["Content-Type"] = "application/json",
-                    ["x-goog-api-key"] = apiKey
-                },
-                Body = encodedBody,
-                Timeout = 20
-            })
-        end)
-        reqCompleted = true
-        if not reqOk then
-            netErr = response
-            response = nil
-        end
-    end)
+    -- 執行 HTTP 請求 (包含針對 503 / 429 臨時高負載的自動重試)
+    local reqOk, response, reqErr
+    for attempt = 1, 2 do
+        reqOk, response, reqErr = universalHttpRequest(endpoint, "POST", headers, encodedBody)
 
-    local startWait = os.clock()
-    while not reqCompleted do
-        if os.clock() - startWait > 20 then
-            logError("HTTP", "HTTP 請求逾時 (20 秒，Executor 無回應)")
-            if #targetSession.history > 0 and targetSession.history[#targetSession.history].role == "user" then
-                table.remove(targetSession.history)
+        if reqOk and response then
+            local code = response.StatusCode
+            if code == 503 or code == 429 then
+                if attempt == 1 then
+                    logWarn("HTTP", string.format("伺服器回傳狀態碼 %d (高負載/忙碌)，自動於 1.5 秒後進行重試...", code))
+                    task.wait(1.5)
+                end
+            else
+                break
             end
-            return false, "HTTP 請求逾時 (20 秒無回應，請檢查網路、代理或 API Key)", "", ""
+        else
+            break
         end
-        task.wait(0.1)
     end
 
-    local statusCode = response and (response.StatusCode or response.statusCode or response.Status or response.status_code)
-    local body = response and (response.Body or response.body)
+    if not reqOk or not response then
+        if #targetSession.history > 0 and targetSession.history[#targetSession.history].role == "user" then
+            table.remove(targetSession.history)
+        end
+        local errMsg = "sUNC 網路請求異常: " .. tostring(reqErr or "未知錯誤")
+        logError("HTTP", errMsg)
+        return false, errMsg, "", ""
+    end
+
+    local statusCode = response.StatusCode
+    local body = response.Body
 
     logInfo("HTTP", string.format("HTTP 伺服器響應狀態碼: %s", tostring(statusCode or "無")))
 
-    if not reqOk or not response or statusCode ~= 200 then
+    if statusCode ~= 200 then
         if #targetSession.history > 0 and targetSession.history[#targetSession.history].role == "user" then
             table.remove(targetSession.history)
         end
 
         local detailedMsg = ""
-        if body and typeof(body) == "string" and #body > 0 then
+        if body and #body > 0 then
             local parseOk, errJson = pcall(HttpService.JSONDecode, HttpService, body)
             if parseOk and errJson and errJson.error then
                 detailedMsg = string.format(" [%s: %s]", tostring(errJson.error.status or errJson.error.code), tostring(errJson.error.message))
@@ -1397,7 +1451,16 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
             end
         end
 
-        local finalErrMsg = string.format("HTTP 請求失敗 (狀態碼 %s)%s %s", tostring(statusCode or "連線中斷"), detailedMsg, tostring(netErr or ""))
+        local friendlyHint = ""
+        if statusCode == 503 then
+            friendlyHint = "\n💡 提示：此模型當前伺服器流量過載，通常為暫時性，請稍後再試，或更換模型。"
+        elseif statusCode == 404 then
+            friendlyHint = "\n💡 提示：模型不存在或此 API 版本不支援，請確認模型名稱。"
+        elseif statusCode == 401 or statusCode == 403 then
+            friendlyHint = "\n💡 提示：API Key 無效或權限不足，請檢查金鑰。"
+        end
+
+        local finalErrMsg = string.format("HTTP 請求失敗 (狀態碼 %s)%s%s", tostring(statusCode or "中斷"), detailedMsg, friendlyHint)
         logError("HTTP", finalErrMsg)
         return false, finalErrMsg, "", ""
     end
@@ -1423,7 +1486,7 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
 
     if replyText == "" and thoughtText == "" then
         logWarn("HTTP", "API 未回傳文本候選內容")
-        return false, "API 未回傳有效內容 (可能觸發內容過濾或 Token 超限)", "", ""
+        return false, "API 未回傳有效內容 (可能觸發安全過濾或 Token 超限)", "", ""
     end
 
     logInfo("HTTP", string.format("HTTP 通信成功 (回覆長度: %d, 思考長度: %d)", #replyText, #thoughtText))
@@ -1541,6 +1604,21 @@ SubmitBtn.MouseButton1Click:Connect(function()
     logInfo("Net", string.format("開始執行指令: '%s' (模型: %s)", prompt, currentModel))
     switchTab("OUTPUT")
 
+    local isRunFinished = false
+    local watchdogThread = task.delay(35, function()
+        if not isRunFinished and isBusy then
+            logWarn("Watchdog", "請求超過 35 秒無回應，看門狗進行自動重置")
+            local activeSess = getActiveSession()
+            activeSess.lastOutput = activeSess.lastOutput .. "\n\n[BloxAgent] ⚠️ 請求逾時 (35 秒 Executor 網路無回應，看門狗已強制釋放)。"
+            ContentLabel.Text = activeSess.lastOutput
+            syncDisplayScroll(true)
+            if currentMainThread then
+                pcall(task.cancel, currentMainThread)
+            end
+            resetBusyState()
+        end
+    end)
+
     currentMainThread = task.spawn(function()
         local executionSuccess, executionError = pcall(function()
             local success, reply, thinking
@@ -1577,21 +1655,24 @@ SubmitBtn.MouseButton1Click:Connect(function()
                 flushRenderUI(false)
             end
 
-            -- 雙軌通信：WS 優先，若失敗或不支持自動降級 HTTP
-            if wsConnect then
-                logInfo("Net", "嘗試使用 WebSocket 雙向串流連線...")
+            -- 智慧路由：檢查模型與環境是否支援 WebSocket
+            local canUseWS = wsConnect and doesModelSupportBidiWS(currentModel)
+
+            if canUseWS then
+                logInfo("Net", "模型支援 Bidi 協議，嘗試使用 WebSocket 雙向串流連線...")
                 success, reply, thinking = callGeminiWebSocket(currentKey, currentModel, prompt, targetSession, streamUpdateUI)
                 if not success then
-                    logWarn("Net", "WebSocket 連線不支援或失敗 (" .. tostring(reply) .. ")，自動切換至 HTTP 降級重試...")
-                    targetSession.lastOutput = string.format("[BloxAgent] WebSocket 連線切換 (理由: %s)\n正在使用 HTTP 降級重試...", tostring(reply))
+                    logWarn("Net", "WebSocket 連線不支援或失敗 (" .. tostring(reply) .. ")，自動切換至 sUNC HTTP 降級重試...")
+                    targetSession.lastOutput = string.format("[BloxAgent] WebSocket 連線切換 (理由: %s)\n正在使用 sUNC HTTP 降級重試...", tostring(reply))
                     ContentLabel.Text = targetSession.lastOutput
                     syncDisplayScroll(true)
                     task.wait(0.3)
                     success, reply, thinking = callGeminiHTTP(currentKey, currentModel, currentLevel, prompt, targetSession)
                 end
             else
-                logInfo("Net", "當前 Executor 不支援 WebSocket，改用 HTTP 發送...")
-                targetSession.lastOutput = "[BloxAgent] 當前 Executor 不支援 WebSocket，改用 HTTP 發送..."
+                local reason = (not wsConnect and "當前 Executor 缺少 WebSocket 支援") or ("此模型不支援 Bidi WS 協議，選用 sUNC HTTP")
+                logInfo("Net", string.format("%s，直接發起 HTTP 請求...", reason))
+                targetSession.lastOutput = string.format("⚡ 正在建立連線至 [%s] (sUNC HTTP 模式)...", currentModel)
                 ContentLabel.Text = targetSession.lastOutput
                 syncDisplayScroll(true)
                 success, reply, thinking = callGeminiHTTP(currentKey, currentModel, currentLevel, prompt, targetSession)
@@ -1745,6 +1826,8 @@ SubmitBtn.MouseButton1Click:Connect(function()
             syncDisplayScroll(true)
         end
 
+        isRunFinished = true
+        pcall(task.cancel, watchdogThread)
         resetBusyState()
     end)
 end)
