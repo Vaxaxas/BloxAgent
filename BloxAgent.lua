@@ -14,6 +14,21 @@ local CollectionService = game:GetService("CollectionService")
 
 local LocalPlayer = Players.LocalPlayer
 
+-- ==================== [ 0. 控制台除錯日誌器 (F9 Console Logger) ] ====================
+local function logInfo(tag, msg)
+    print(string.format("[BloxAgent:%s] %s", tag, tostring(msg)))
+end
+
+local function logWarn(tag, msg)
+    warn(string.format("[BloxAgent:%s] ⚠️ %s", tag, tostring(msg)))
+end
+
+local function logError(tag, msg)
+    warn(string.format("[BloxAgent:%s] ❌ %s", tag, tostring(msg)))
+end
+
+logInfo("Core", "BloxAgent Pro 正在初始化...")
+
 -- ==================== [ 1. Workspace 儲存層與路徑配置 ] ====================
 local FOLDER_NAME   = "BloxAgent"
 local KEY_FILE      = FOLDER_NAME .. "/gemini_key.txt"
@@ -73,7 +88,7 @@ You have unrestricted access to standard Luau globals, UNC primitives, and built
 3. No conversational preambles, apologies, or markdown outside the ```lua ... ``` block.]===]
 
 local DEFAULT_CONFIG = {
-    MODEL = "gemini-2.0-flash-exp",
+    MODEL = "gemini-2.0-flash",
     THINK_LEVEL = "Medium",
     MAX_HISTORY = 8
 }
@@ -252,12 +267,14 @@ end
 loadFromWorkspace()
 
 -- ==================== [ 4. UNC 相容層 (HTTP & WebSocket) ] ====================
-local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-local wsConnect = (WebSocket and WebSocket.connect) or (syn and syn.websocket and syn.websocket.connect)
+local httpRequest = request or http_request or (syn and syn.request) or (http and http.request) or (fluxus and fluxus.request)
+local wsConnect = (WebSocket and (WebSocket.connect or WebSocket.Connect)) or (syn and syn.websocket and syn.websocket.connect)
 local guiParent = (gethui and gethui()) or game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
 
 local activeWebSocket = nil
 local lastWatchdogHeartbeat = os.clock()
+
+logInfo("UNC", string.format("相容性檢測: httpRequest = %s, wsConnect = %s", httpRequest and "可用" or "缺失", wsConnect and "可用" or "缺失"))
 
 -- ==================== [ 5. AgentEnv 核心模組 ] ====================
 local AgentEnv = {
@@ -645,7 +662,7 @@ ModelInputBox.Size = UDim2.new(0.55, -10, 0, 24)
 ModelInputBox.Position = UDim2.new(0, 10, 0, 66)
 ModelInputBox.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
 ModelInputBox.TextColor3 = Color3.fromRGB(255, 215, 0)
-ModelInputBox.PlaceholderText = "Model (gemini-2.0-flash-exp)"
+ModelInputBox.PlaceholderText = "Model (gemini-2.0-flash)"
 ModelInputBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
 ModelInputBox.ClearTextOnFocus = false
 ModelInputBox.Font = Enum.Font.Code
@@ -1133,12 +1150,16 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
         apiKey
     )
 
-    local ws = nil
-    local okConn, errConn = pcall(function() return wsConnect(wsUrl) end)
-    if not okConn or not ws then
-        return false, "WebSocket 連線建立失敗: " .. tostring(errConn or "未知錯誤")
+    logInfo("WS", "正在嘗試建立 WebSocket 雙向串流連線至: " .. cleanModel)
+
+    local okConn, wsOrErr = pcall(function() return wsConnect(wsUrl) end)
+    if not okConn or not wsOrErr then
+        logWarn("WS", "WebSocket 連線建立失敗: " .. tostring(wsOrErr or "未知錯誤"))
+        return false, "WebSocket 連線建立失敗: " .. tostring(wsOrErr or "未知錯誤")
     end
+    local ws = wsOrErr
     activeWebSocket = ws
+    logInfo("WS", "WebSocket 連線物件已創建，正在進行 Bidi 協議交握...")
 
     local setupPayload = {
         setup = {
@@ -1184,6 +1205,7 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
         if not parseOk or typeof(data) ~= "table" then return end
 
         if data.setupComplete then
+            logInfo("WS", "Bidi Setup 完成，發送用戶指令...")
             pcall(function() ws:Send(HttpService:JSONEncode(clientTurnPayload)) end)
             return
         end
@@ -1203,33 +1225,48 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
             end
 
             if serverContent.turnComplete then
+                logInfo("WS", "模型生成完畢 (turnComplete)")
                 isFinished = true
             end
         end
 
         if data.error then
             streamError = string.format("API 串流錯誤 (%s): %s", tostring(data.error.code), tostring(data.error.message))
+            logError("WS", streamError)
             isFinished = true
         end
     end
 
-    if ws.OnMessage and typeof(ws.OnMessage.Connect) == "function" then
-        ws.OnMessage:Connect(handleIncomingMessage)
-    else
-        ws.OnMessage = handleIncomingMessage
-    end
-
     local function handleClose()
         if not receivedContent and not isFinished then
-            streamError = "WebSocket 連線非正常中斷 (可能為無效 Key 或模型不支援 Bidi)"
+            streamError = "WebSocket 連線已中斷 (可能為無效 Key、模型不支援 Bidi 或網路阻擋)"
+            logWarn("WS", streamError)
         end
         isFinished = true
     end
 
-    if ws.OnClose and typeof(ws.OnClose.Connect) == "function" then
-        ws.OnClose:Connect(handleClose)
-    else
+    -- 多種 Executor WebSocket 事件相容綁定
+    local function bindWsEvent(eventName, handler)
+        if ws[eventName] then
+            if typeof(ws[eventName].Connect) == "function" then
+                pcall(function() ws[eventName]:Connect(handler) end)
+                return true
+            elseif typeof(ws[eventName]) == "function" then
+                pcall(function() ws[eventName](ws, handler) end)
+                return true
+            end
+        end
+        return false
+    end
+
+    if not bindWsEvent("OnMessage", handleIncomingMessage) and not bindWsEvent("Message", handleIncomingMessage) then
+        ws.OnMessage = handleIncomingMessage
+        if ws.onmessage ~= nil then ws.onmessage = handleIncomingMessage end
+    end
+
+    if not bindWsEvent("OnClose", handleClose) and not bindWsEvent("Close", handleClose) then
         ws.OnClose = handleClose
+        if ws.onclose ~= nil then ws.onclose = handleClose end
     end
 
     local sendOk, sendErr = pcall(function()
@@ -1237,27 +1274,36 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
     end)
 
     if not sendOk then
-        pcall(function() ws:Close() end)
+        logError("WS", "握手請求發送失敗: " .. tostring(sendErr))
+        pcall(function()
+            if ws.Close then ws:Close()
+            elseif ws.close then ws:close() end
+        end)
         activeWebSocket = nil
         return false, "WebSocket 握手發送失敗: " .. tostring(sendErr)
     end
 
     local waitStart = os.clock()
     while not isFinished do
-        if os.clock() - waitStart > 30 then
-            streamError = "WebSocket 響應逾時 (30 秒)"
+        if os.clock() - waitStart > 20 then
+            streamError = "WebSocket 響應逾時 (20 秒無數據)"
+            logWarn("WS", streamError)
             break
         end
-        task.wait(0.03)
+        task.wait(0.05)
     end
 
-    pcall(function() ws:Close() end)
+    pcall(function()
+        if ws.Close then ws:Close()
+        elseif ws.close then ws:close() end
+    end)
     activeWebSocket = nil
 
     if streamError or not receivedContent then
-        return false, streamError or "未收到有效回應"
+        return false, streamError or "未收到有效 WebSocket 回應"
     end
 
+    logInfo("WS", string.format("WebSocket 通信成功 (回覆長度: %d)", #fullReply))
     table.insert(targetSession.history, { role = "user", parts = { { text = userPrompt } } })
     table.insert(targetSession.history, { role = "model", parts = { { text = fullReply } } })
 
@@ -1271,7 +1317,10 @@ end
 
 local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
     local cleanModel = (modelName:gsub("^models/", ""))
-    local endpoint = string.format("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", cleanModel)
+    -- 同時在 URL 與 Headers 攜帶 key，確保各種 Executor 的相容性
+    local endpoint = string.format("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cleanModel, apiKey)
+
+    logInfo("HTTP", "正在發起 HTTP 降級請求: " .. cleanModel)
 
     table.insert(targetSession.history, { role = "user", parts = { { text = userPrompt } } })
     while #targetSession.history > (Config.MAX_HISTORY * 2) do
@@ -1285,40 +1334,99 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
         generationConfig = { temperature = 0.1, maxOutputTokens = 8192 }
     }
 
-    local response
-    local ok, netErr = pcall(function()
-        response = httpRequest({
-            Url = endpoint,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["x-goog-api-key"] = apiKey
-            },
-            Body = HttpService:JSONEncode(payload)
-        })
+    if not httpRequest then
+        logError("HTTP", "當前環境找不到可用的 httpRequest 函數")
+        return false, "當前 Executor 不支援 HTTP 請求 (缺少 request 函數)", "", ""
+    end
+
+    local reqCompleted = false
+    local reqOk = false
+    local response = nil
+    local netErr = nil
+    local encodedBody = HttpService:JSONEncode(payload)
+
+    task.spawn(function()
+        reqOk, response = pcall(function()
+            return httpRequest({
+                Url = endpoint,
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json",
+                    ["x-goog-api-key"] = apiKey
+                },
+                Body = encodedBody,
+                Timeout = 20
+            })
+        end)
+        reqCompleted = true
+        if not reqOk then
+            netErr = response
+            response = nil
+        end
     end)
 
-    if not ok or not response or response.StatusCode ~= 200 then
+    local startWait = os.clock()
+    while not reqCompleted do
+        if os.clock() - startWait > 20 then
+            logError("HTTP", "HTTP 請求逾時 (20 秒，Executor 無回應)")
+            if #targetSession.history > 0 and targetSession.history[#targetSession.history].role == "user" then
+                table.remove(targetSession.history)
+            end
+            return false, "HTTP 請求逾時 (20 秒無回應，請檢查網路、代理或 API Key)", "", ""
+        end
+        task.wait(0.1)
+    end
+
+    local statusCode = response and (response.StatusCode or response.statusCode or response.Status or response.status_code)
+    local body = response and (response.Body or response.body)
+
+    logInfo("HTTP", string.format("HTTP 伺服器響應狀態碼: %s", tostring(statusCode or "無")))
+
+    if not reqOk or not response or statusCode ~= 200 then
         if #targetSession.history > 0 and targetSession.history[#targetSession.history].role == "user" then
             table.remove(targetSession.history)
         end
-        return false, "HTTP 請求失敗: " .. tostring(netErr or (response and response.Body) or "未知錯誤"), "", ""
+
+        local detailedMsg = ""
+        if body and typeof(body) == "string" and #body > 0 then
+            local parseOk, errJson = pcall(HttpService.JSONDecode, HttpService, body)
+            if parseOk and errJson and errJson.error then
+                detailedMsg = string.format(" [%s: %s]", tostring(errJson.error.status or errJson.error.code), tostring(errJson.error.message))
+            else
+                detailedMsg = " [" .. (body:sub(1, 160)) .. "]"
+            end
+        end
+
+        local finalErrMsg = string.format("HTTP 請求失敗 (狀態碼 %s)%s %s", tostring(statusCode or "連線中斷"), detailedMsg, tostring(netErr or ""))
+        logError("HTTP", finalErrMsg)
+        return false, finalErrMsg, "", ""
     end
 
-    local data = HttpService:JSONDecode(response.Body)
+    local parseOk, data = pcall(HttpService.JSONDecode, HttpService, body)
+    if not parseOk or typeof(data) ~= "table" then
+        logError("HTTP", "JSON 解析失敗: " .. tostring(body):sub(1, 100))
+        return false, "伺服器返回非有效 JSON 格式", "", ""
+    end
+
     local replyText = ""
     local thoughtText = ""
 
-    if data.candidates and data.candidates[1] and data.candidates[1].content then
+    if data.candidates and data.candidates[1] and data.candidates[1].content and data.candidates[1].content.parts then
         for _, part in ipairs(data.candidates[1].content.parts) do
             if part.thought == true then
                 thoughtText = thoughtText .. (part.text or "")
-            else
+            elseif part.text then
                 replyText = replyText .. (part.text or "")
             end
         end
     end
 
+    if replyText == "" and thoughtText == "" then
+        logWarn("HTTP", "API 未回傳文本候選內容")
+        return false, "API 未回傳有效內容 (可能觸發內容過濾或 Token 超限)", "", ""
+    end
+
+    logInfo("HTTP", string.format("HTTP 通信成功 (回覆長度: %d, 思考長度: %d)", #replyText, #thoughtText))
     table.insert(targetSession.history, { role = "model", parts = { { text = replyText } } })
     return true, replyText, thoughtText
 end
@@ -1354,8 +1462,12 @@ end
 
 SubmitBtn.MouseButton1Click:Connect(function()
     if isBusy then
+        logWarn("Core", "使用者點擊停止執行...")
         if activeWebSocket then
-            pcall(function() activeWebSocket:Close() end)
+            pcall(function()
+                if activeWebSocket.Close then activeWebSocket:Close()
+                elseif activeWebSocket.close then activeWebSocket:close() end
+            end)
             activeWebSocket = nil
         end
         if currentCodeThread then
@@ -1390,20 +1502,28 @@ SubmitBtn.MouseButton1Click:Connect(function()
 
     if currentKey == "" then
         targetSession.lastOutput = "錯誤: API Key 不可為空。"
+        logWarn("Input", targetSession.lastOutput)
         switchTab("OUTPUT")
         return
     end
 
     if currentModel == "" then
         targetSession.lastOutput = "錯誤: Model 名稱不可為空。"
+        logWarn("Input", targetSession.lastOutput)
         switchTab("OUTPUT")
         return
     end
 
     if not prompt:match("%S") then
         targetSession.lastOutput = "錯誤: 請輸入要執行的指令。"
+        logWarn("Input", targetSession.lastOutput)
         switchTab("OUTPUT")
         return
+    end
+
+    -- 格式提示
+    if not currentKey:match("^AIzaSy") then
+        logWarn("Auth", "提醒：輸入的金鑰不是以 'AIzaSy' 開頭，Google AI Studio 金鑰格式應為 AIzaSy...")
     end
 
     if currentKey ~= CurrentApiKey then
@@ -1418,6 +1538,7 @@ SubmitBtn.MouseButton1Click:Connect(function()
     SubmitBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
 
     targetSession.lastOutput = string.format("⚡ 正在建立連線至 [%s]...", currentModel)
+    logInfo("Net", string.format("開始執行指令: '%s' (模型: %s)", prompt, currentModel))
     switchTab("OUTPUT")
 
     currentMainThread = task.spawn(function()
@@ -1458,24 +1579,32 @@ SubmitBtn.MouseButton1Click:Connect(function()
 
             -- 雙軌通信：WS 優先，若失敗或不支持自動降級 HTTP
             if wsConnect then
+                logInfo("Net", "嘗試使用 WebSocket 雙向串流連線...")
                 success, reply, thinking = callGeminiWebSocket(currentKey, currentModel, prompt, targetSession, streamUpdateUI)
                 if not success then
-                    targetSession.lastOutput = string.format("[BloxAgent] WebSocket 異常 (%s)，自動切換至 HTTP 降級重試...", tostring(reply))
+                    logWarn("Net", "WebSocket 連線不支援或失敗 (" .. tostring(reply) .. ")，自動切換至 HTTP 降級重試...")
+                    targetSession.lastOutput = string.format("[BloxAgent] WebSocket 連線切換 (理由: %s)\n正在使用 HTTP 降級重試...", tostring(reply))
                     ContentLabel.Text = targetSession.lastOutput
                     syncDisplayScroll(true)
-                    task.wait(0.5)
+                    task.wait(0.3)
                     success, reply, thinking = callGeminiHTTP(currentKey, currentModel, currentLevel, prompt, targetSession)
                 end
             else
+                logInfo("Net", "當前 Executor 不支援 WebSocket，改用 HTTP 發送...")
                 targetSession.lastOutput = "[BloxAgent] 當前 Executor 不支援 WebSocket，改用 HTTP 發送..."
                 ContentLabel.Text = targetSession.lastOutput
                 syncDisplayScroll(true)
                 success, reply, thinking = callGeminiHTTP(currentKey, currentModel, currentLevel, prompt, targetSession)
             end
 
+            if success then
+                pendingReply = reply or ""
+                pendingThinking = thinking or ""
+            end
             flushRenderUI(true)
 
             if not success then
+                logError("Exec", "通信最終失敗: " .. tostring(reply))
                 targetSession.lastOutput = "✗ " .. tostring(reply)
                 ContentLabel.Text = targetSession.lastOutput
                 syncDisplayScroll(true)
@@ -1484,12 +1613,15 @@ SubmitBtn.MouseButton1Click:Connect(function()
 
             local luaCode = extractLuaCode(reply)
             if not luaCode then
+                logWarn("Exec", "模型回覆未包含有效的 Luau 代碼區塊")
                 targetSession.lastOutput = "✗ 響應內容未包含有效的 Luau 代碼區塊。\n\n" .. reply
                 ContentLabel.Text = targetSession.lastOutput
                 syncDisplayScroll(true)
                 return
             end
             targetSession.lastCode = luaCode
+
+            logInfo("Exec", "代碼提取成功，開始編譯與沙盒載入...")
 
             local capturedLogs = {}
             local func, compileErr
@@ -1504,6 +1636,7 @@ SubmitBtn.MouseButton1Click:Connect(function()
 
             if not func then
                 runErr = "代碼編譯失敗: " .. tostring(compileErr)
+                logError("Exec", runErr)
             else
                 -- 安全沙盒構建 (阻斷主程序 script)
                 local customEnv = {
@@ -1514,7 +1647,9 @@ SubmitBtn.MouseButton1Click:Connect(function()
                             local v = select(i, ...)
                             str[i] = typeof(v) == "table" and (pcall(HttpService.JSONEncode, HttpService, sanitizeForJSON(v)) and HttpService:JSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
                         end
-                        table.insert(capturedLogs, table.concat(str, " "))
+                        local line = table.concat(str, " ")
+                        table.insert(capturedLogs, line)
+                        logInfo("AgentPrint", line) -- 同步輸出至 F9 控制台！
                     end,
                     AgentEnv = AgentEnv,
                     LocalPlayer = LocalPlayer,
@@ -1543,6 +1678,8 @@ SubmitBtn.MouseButton1Click:Connect(function()
                 local finished = false
                 lastWatchdogHeartbeat = os.clock()
 
+                logInfo("Exec", "沙盒環境就緒，啟動執行線程...")
+
                 currentCodeThread = task.spawn(function()
                     runOk, runErr = pcall(func)
                     finished = true
@@ -1558,6 +1695,7 @@ SubmitBtn.MouseButton1Click:Connect(function()
                         end
                         runOk = false
                         runErr = "代碼無響應超過 " .. tostring(TIMEOUT) .. " 秒 (看門狗強制中斷)"
+                        logWarn("Watchdog", runErr)
                         break
                     end
                     task.wait(0.05)
@@ -1575,8 +1713,10 @@ SubmitBtn.MouseButton1Click:Connect(function()
 
             if func then
                 if runOk then
+                    logInfo("Exec", "Luau 代碼執行成功！")
                     table.insert(resultSections, "✓ 執行成功！已完成操作。")
                 else
+                    logError("Exec", "代碼執行報錯: " .. tostring(runErr))
                     table.insert(resultSections, "✗ 執行報錯: " .. tostring(runErr))
                 end
             else
@@ -1599,6 +1739,7 @@ SubmitBtn.MouseButton1Click:Connect(function()
         end)
 
         if not executionSuccess then
+            logError("Core", "腳本內部崩潰: " .. tostring(executionError))
             targetSession.lastOutput = "✗ 腳本內部崩潰: " .. tostring(executionError)
             ContentLabel.Text = targetSession.lastOutput
             syncDisplayScroll(true)
