@@ -29,6 +29,19 @@ end
 
 logInfo("Core", "BloxAgent Pro 正在初始化...")
 
+-- 清理舊實例與事件連線 (腳本重入防護)
+if getgenv and getgenv()._BloxAgentCleanup then
+    pcall(getgenv()._BloxAgentCleanup)
+    getgenv()._BloxAgentCleanup = nil
+end
+
+local guiParent = (gethui and gethui()) or (pcall(function() return game:GetService("CoreGui") end) and game:GetService("CoreGui")) or LocalPlayer:WaitForChild("PlayerGui")
+local oldGui = guiParent:FindFirstChild("BloxAgent_Framework")
+if oldGui then
+    logInfo("Core", "檢測到舊版本 GUI 實例，正在自動清理...")
+    pcall(function() oldGui:Destroy() end)
+end
+
 -- ==================== [ 1. Workspace 儲存層與路徑配置 ] ====================
 local FOLDER_NAME   = "BloxAgent"
 local KEY_FILE      = FOLDER_NAME .. "/gemini_key.txt"
@@ -112,7 +125,19 @@ local function sanitizeForJSON(val, depth, visited)
     visited = visited or {}
     local t = typeof(val)
 
-    if t == "table" then
+    if t == "number" then
+        if val ~= val then
+            return "[NaN]"
+        elseif val == math.huge then
+            return "[+Infinity]"
+        elseif val == -math.huge then
+            return "[-Infinity]"
+        end
+        return val
+    elseif t == "string" then
+        -- 清除非法 ASCII 控制字元與空位元組 (\0-\8, \11-\12, \14-\31)，保留 \t, \n, \r
+        return (val:gsub("[%z\1-\8\11\12\14-\31]", ""))
+    elseif t == "table" then
         if visited[val] then return "[Circular]" end
         visited[val] = true
         local clean = {}
@@ -147,10 +172,49 @@ local function extractLuaCode(text)
             end
         end
     end
+    if not best then
+        -- 容錯機制：若模型直接回傳無 Markdown 標記的純 Lua 代碼
+        local trimmed = text:match("^%s*(.-)%s*$")
+        if trimmed and (#trimmed > 5) then
+            if trimmed:sub(1, 2) == "--" or trimmed:match("^local%s") or trimmed:match("^print%(") or trimmed:match("^game:") or trimmed:match("^task%.") then
+                best = trimmed
+            end
+        end
+    end
     return best
 end
 
--- ==================== [ 3. Session 會話管理器 ] ====================
+-- ==================== [ 3. Session 會話管理器與安全持久化 ] ====================
+local function safeJSONEncode(data)
+    local ok, res = pcall(function()
+        return HttpService:JSONEncode(data)
+    end)
+    return ok and res or nil
+end
+
+local function safeJSONDecode(str)
+    local ok, res = pcall(function()
+        return HttpService:JSONDecode(str)
+    end)
+    return ok and res or nil
+end
+
+local function safeWriteFile(path, content)
+    if not writefile then return false end
+    return pcall(function()
+        writefile(path, content)
+    end)
+end
+
+local function safeReadFile(path)
+    if not readfile then return false, nil end
+    if isfile then
+        local ok, exists = pcall(isfile, path)
+        if not ok or not exists then return false, nil end
+    end
+    return pcall(readfile, path)
+end
+
 local SessionManager = {
     List = {},
     ActiveId = ""
@@ -158,29 +222,30 @@ local SessionManager = {
 
 local function saveSessionsToWorkspace()
     ensureWorkspaceFolder()
-    if writefile then
-        local sanitizedList = {}
-        for _, s in ipairs(SessionManager.List) do
-            local cleanHist = {}
-            local startIdx = math.max(1, #s.history - (Config.MAX_HISTORY * 2) + 1)
-            for i = startIdx, #s.history do
-                table.insert(cleanHist, s.history[i])
-            end
-            table.insert(sanitizedList, {
-                id = s.id,
-                name = s.name,
-                history = cleanHist,
-                lastOutput = (s.lastOutput and #s.lastOutput > 2500) and (s.lastOutput:sub(1, 2500) .. "\n...[已截斷]") or s.lastOutput,
-                lastCode = s.lastCode,
-                createdAt = s.createdAt
-            })
+    local sanitizedList = {}
+    for _, s in ipairs(SessionManager.List) do
+        local cleanHist = {}
+        local startIdx = math.max(1, #s.history - (Config.MAX_HISTORY * 2) + 1)
+        for i = startIdx, #s.history do
+            table.insert(cleanHist, s.history[i])
         end
+        table.insert(sanitizedList, {
+            id = s.id,
+            name = s.name,
+            history = cleanHist,
+            lastOutput = (s.lastOutput and #s.lastOutput > 2500) and (s.lastOutput:sub(1, 2500) .. "\n...[已截斷]") or s.lastOutput,
+            lastCode = s.lastCode,
+            createdAt = s.createdAt
+        })
+    end
 
-        local payload = {
-            activeId = SessionManager.ActiveId,
-            sessions = sanitizedList
-        }
-        pcall(writefile, SESSIONS_FILE, HttpService:JSONEncode(payload))
+    local payload = {
+        activeId = SessionManager.ActiveId,
+        sessions = sanitizedList
+    }
+    local encoded = safeJSONEncode(payload)
+    if encoded then
+        safeWriteFile(SESSIONS_FILE, encoded)
     end
 end
 
@@ -215,32 +280,30 @@ end
 
 local function loadFromWorkspace()
     ensureWorkspaceFolder()
-    if readfile then
-        local okK, contentK = pcall(readfile, KEY_FILE)
-        if okK and contentK and #contentK > 0 then
-            CurrentApiKey = (contentK:gsub("%s+", ""))
-        end
+    local okK, contentK = safeReadFile(KEY_FILE)
+    if okK and contentK and #contentK > 0 then
+        CurrentApiKey = (contentK:gsub("%s+", ""))
+    end
 
-        local okC, contentC = pcall(readfile, CFG_FILE)
-        if okC and contentC then
-            local jsonOk, parsed = pcall(HttpService.JSONDecode, HttpService, contentC)
-            if jsonOk and typeof(parsed) == "table" then
-                for k, v in pairs(parsed) do Config[k] = v end
-            end
+    local okC, contentC = safeReadFile(CFG_FILE)
+    if okC and contentC and #contentC > 0 then
+        local parsed = safeJSONDecode(contentC)
+        if parsed and typeof(parsed) == "table" then
+            for k, v in pairs(parsed) do Config[k] = v end
         end
+    end
 
-        local okP, contentP = pcall(readfile, PROMPT_FILE)
-        if okP and contentP and #contentP > 0 then
-            CurrentSystemPrompt = contentP
-        end
+    local okP, contentP = safeReadFile(PROMPT_FILE)
+    if okP and contentP and #contentP > 0 then
+        CurrentSystemPrompt = contentP
+    end
 
-        local okS, contentS = pcall(readfile, SESSIONS_FILE)
-        if okS and contentS and #contentS > 0 then
-            local jsonOk, parsedS = pcall(HttpService.JSONDecode, HttpService, contentS)
-            if jsonOk and typeof(parsedS) == "table" and parsedS.sessions and #parsedS.sessions > 0 then
-                SessionManager.List = parsedS.sessions
-                SessionManager.ActiveId = parsedS.activeId or parsedS.sessions[1].id
-            end
+    local okS, contentS = safeReadFile(SESSIONS_FILE)
+    if okS and contentS and #contentS > 0 then
+        local parsedS = safeJSONDecode(contentS)
+        if parsedS and typeof(parsedS) == "table" and parsedS.sessions and #parsedS.sessions > 0 then
+            SessionManager.List = parsedS.sessions
+            SessionManager.ActiveId = parsedS.activeId or parsedS.sessions[1].id
         end
     end
 
@@ -251,17 +314,20 @@ end
 
 local function saveApiKey(key)
     ensureWorkspaceFolder()
-    if writefile then pcall(writefile, KEY_FILE, (key:gsub("%s+", ""))) end
+    safeWriteFile(KEY_FILE, (key:gsub("%s+", "")))
 end
 
 local function saveConfig()
     ensureWorkspaceFolder()
-    if writefile then pcall(writefile, CFG_FILE, HttpService:JSONEncode(Config)) end
+    local encoded = safeJSONEncode(Config)
+    if encoded then
+        safeWriteFile(CFG_FILE, encoded)
+    end
 end
 
 local function savePrompt(promptText)
     ensureWorkspaceFolder()
-    if writefile then pcall(writefile, PROMPT_FILE, promptText) end
+    safeWriteFile(PROMPT_FILE, promptText)
 end
 
 loadFromWorkspace()
@@ -287,7 +353,7 @@ end
 
 local rawHttpRequest = resolveHttpRequest()
 local wsConnect = resolveWsConnect()
-local guiParent = (gethui and gethui()) or game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
+guiParent = guiParent or (gethui and gethui()) or (pcall(function() return game:GetService("CoreGui") end) and game:GetService("CoreGui")) or LocalPlayer:WaitForChild("PlayerGui")
 
 local activeWebSocket = nil
 local lastWatchdogHeartbeat = os.clock()
@@ -367,24 +433,58 @@ end
 
 function AgentEnv.teleport(target)
     local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false, "找不到本地 HumanoidRootPart" end
+    if not hrp or not hum then return false, "找不到本地 Humanoid 或 HumanoidRootPart" end
 
+    -- 解除坐姿以防被載具約束或彈出
+    if hum.Sit then
+        hum.Sit = false
+        task.wait(0.05)
+    end
+
+    -- 傳送前清除角色殘留速度以防甩飛
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    local targetCFrame = nil
     if typeof(target) == "CFrame" then
-        hrp.CFrame = target
+        targetCFrame = target
     elseif typeof(target) == "Vector3" then
-        hrp.CFrame = CFrame.new(target)
+        targetCFrame = CFrame.new(target)
+    elseif typeof(target) == "Instance" then
+        if target:IsA("BasePart") then
+            targetCFrame = target.CFrame + Vector3.new(0, 3, 0)
+        elseif target:IsA("Model") then
+            targetCFrame = target:GetPivot() + Vector3.new(0, 3, 0)
+        elseif target:IsA("PVInstance") then
+            targetCFrame = target:GetPivot() + Vector3.new(0, 3, 0)
+        else
+            return false, "傳送目標 Instance 必須為 BasePart 或 Model (PVInstance)"
+        end
     elseif typeof(target) == "string" then
         for _, p in ipairs(Players:GetPlayers()) do
             if string.find(p.Name:lower(), target:lower(), 1, true) or (p.DisplayName and string.find(p.DisplayName:lower(), target:lower(), 1, true)) then
                 if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-                    hrp.CFrame = p.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
-                    return true, "已傳送到: " .. p.Name
+                    targetCFrame = p.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+                    break
                 end
             end
         end
-        return false, "未找到指定玩家"
+        if not targetCFrame then return false, "未找到指定玩家" end
     end
+
+    if not targetCFrame then return false, "無法解析傳送目標" end
+
+    hrp.CFrame = targetCFrame
+
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+
     return true, "傳送完成"
 end
 
@@ -392,7 +492,7 @@ function AgentEnv.walkTo(target, options)
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hum or not hrp then return false, "缺少 Humanoid 或 HumanoidRootPart" end
+    if not hum or not hrp or hum.Health <= 0 then return false, "缺少有效的 Humanoid 或 HumanoidRootPart" end
 
     local destPos = nil
     if typeof(target) == "Vector3" then
@@ -404,8 +504,10 @@ function AgentEnv.walkTo(target, options)
             destPos = target.Position
         elseif target:IsA("Model") and target.PrimaryPart then
             destPos = target.PrimaryPart.Position
-        else
+        elseif target:IsA("PVInstance") then
             destPos = target:GetPivot().Position
+        else
+            return false, "尋路目標 Instance 必須為 PVInstance (BasePart 或 Model)"
         end
     elseif typeof(target) == "string" then
         for _, p in ipairs(Players:GetPlayers()) do
@@ -437,34 +539,87 @@ function AgentEnv.walkTo(target, options)
     end
 
     local waypoints = path:GetWaypoints()
-    for _, wp in ipairs(waypoints) do
+    local consecutiveStuck = 0
+
+    for i, wp in ipairs(waypoints) do
         AgentEnv.heartbeat()
 
-        if wp.Action == Enum.PathWaypointAction.Jump then
-            hum.Jump = true
+        -- 檢查每步的存活性
+        local curChar = LocalPlayer.Character
+        local curHum = curChar and curChar:FindFirstChildOfClass("Humanoid")
+        local curHrp = curChar and curChar:FindFirstChild("HumanoidRootPart")
+        if not curChar or not curHum or not curHrp or curHum.Health <= 0 then
+            return false, "尋路中斷：本地角色不存在或已死亡"
         end
-        hum:MoveTo(wp.Position)
+
+        if wp.Action == Enum.PathWaypointAction.Jump then
+            curHum.Jump = true
+        end
+        curHum:MoveTo(wp.Position)
 
         local reached = false
-        local conn = hum.MoveToFinished:Connect(function(didReach)
-            if didReach then reached = true end
+        local conn
+        local connectOk = pcall(function()
+            conn = curHum.MoveToFinished:Connect(function(didReach)
+                if didReach then reached = true end
+            end)
         end)
 
         local startT = os.clock()
         while not reached and (os.clock() - startT < 3.5) do
             AgentEnv.heartbeat()
-            if (hrp.Position - wp.Position).Magnitude < 3.5 then break end
+            if curHrp and (curHrp.Position - wp.Position).Magnitude < 3.5 then
+                reached = true
+                break
+            end
             task.wait(0.05)
         end
-        conn:Disconnect()
+
+        if connectOk and conn then
+            pcall(function() conn:Disconnect() end)
+        end
+
+        if not reached and curHrp and (curHrp.Position - wp.Position).Magnitude >= 3.5 then
+            consecutiveStuck = consecutiveStuck + 1
+            if consecutiveStuck >= 3 then
+                return false, string.format("尋路失敗：在第 %d/%d 個航點連續受阻無法通行", i, #waypoints)
+            end
+        else
+            consecutiveStuck = 0
+        end
     end
 
-    return true, string.format("尋路到達目標 (經過 %d 個航點)", #waypoints)
+    return true, string.format("尋路到達目標 (順利通過 %d 個航點)", #waypoints)
+end
+
+-- ==================== [ sUNC Hooking & Remote Spy 互斥引擎 ] ====================
+local hasHookMetamethod = (typeof(hookmetamethod) == "function")
+local hasHookFunction = (typeof(hookfunction) == "function")
+local hasNewcclosure = (typeof(newcclosure) == "function")
+local hasCheckcaller = (typeof(checkcaller) == "function")
+local hasGetNamecallMethod = (typeof(getnamecallmethod) == "function")
+
+local function safeNewcclosure(fn)
+    if hasNewcclosure then
+        local ok, wrapped = pcall(newcclosure, fn)
+        if ok and wrapped then return wrapped end
+    end
+    return fn
+end
+
+local function safeCheckcaller()
+    if hasCheckcaller then
+        local ok, isExecutorCall = pcall(checkcaller)
+        if ok then return isExecutorCall end
+    end
+    return false
 end
 
 local originalNamecall = nil
 local originalFireServer = nil
 local originalInvokeServer = nil
+local dummyRemoteEvent = nil
+local dummyRemoteFunction = nil
 
 local function internalRecordRemote(inst, method, args)
     if not inst or typeof(inst) ~= "Instance" then return false end
@@ -477,7 +632,7 @@ local function internalRecordRemote(inst, method, args)
 
     if AgentEnv.RemoteSpyActive then
         local cleanArgs = sanitizeForJSON(args)
-        local okFull, fullPath = pcall(inst.GetFullName, inst)
+        local okFull, fullPath = pcall(function() return inst:GetFullName() end)
         table.insert(AgentEnv.RemoteLogs, {
             time = os.date("%H:%M:%S"),
             name = rName,
@@ -496,59 +651,96 @@ end
 function AgentEnv.startRemoteSpy(options)
     if AgentEnv.RemoteSpyActive then return true, "Remote Spy 運作中" end
 
-    -- 1. Hook __namecall (覆蓋 :FireServer / :InvokeServer)
-    if not originalNamecall and hookmetamethod then
-        originalNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if not checkcaller() and (method == "FireServer" or method == "InvokeServer") then
-                if internalRecordRemote(self, method, {...}) then
+    -- 互斥原則：若支援 hookmetamethod，優先 hook __namecall，絕不重複 hook hookfunction 避免雙倍截獲
+    if hasHookMetamethod and hasGetNamecallMethod then
+        if not originalNamecall then
+            local hookFn = safeNewcclosure(function(self, ...)
+                if not AgentEnv.RemoteSpyActive then
+                    return originalNamecall(self, ...)
+                end
+                if not safeCheckcaller() then
+                    local method = getnamecallmethod()
+                    if method == "FireServer" or method == "InvokeServer" then
+                        if internalRecordRemote(self, method, {...}) then
+                            return nil
+                        end
+                    end
+                end
+                return originalNamecall(self, ...)
+            end)
+            local okHook, resHook = pcall(hookmetamethod, game, "__namecall", hookFn)
+            if okHook then
+                originalNamecall = resHook
+                logInfo("Hook", "已啟用 hookmetamethod(__namecall) 攔截軌道")
+            else
+                logWarn("Hook", "hookmetamethod 攔截失敗: " .. tostring(resHook))
+            end
+        end
+    elseif hasHookFunction then
+        -- 僅在缺少 hookmetamethod 時使用 hookfunction 作為備用防線
+        if not originalFireServer then
+            dummyRemoteEvent = Instance.new("RemoteEvent")
+            local hookEventFn = safeNewcclosure(function(self, ...)
+                if not AgentEnv.RemoteSpyActive then
+                    return originalFireServer(self, ...)
+                end
+                if not safeCheckcaller() and internalRecordRemote(self, "FireServer", {...}) then
                     return nil
                 end
+                return originalFireServer(self, ...)
+            end)
+            local okHook, res = pcall(hookfunction, dummyRemoteEvent.FireServer, hookEventFn)
+            if okHook then
+                originalFireServer = res
+                logInfo("Hook", "已啟用 hookfunction(FireServer) 備用攔截軌道")
             end
-            return originalNamecall(self, ...)
-        end))
-    end
+        end
 
-    -- 2. Hook function (覆蓋 .FireServer 直接調用)
-    if not originalFireServer and hookfunction then
-        local dummyRemote = Instance.new("RemoteEvent")
-        originalFireServer = hookfunction(dummyRemote.FireServer, newcclosure(function(self, ...)
-            if not checkcaller() and internalRecordRemote(self, "FireServer", {...}) then
-                return nil
+        if not originalInvokeServer then
+            dummyRemoteFunction = Instance.new("RemoteFunction")
+            local hookFuncFn = safeNewcclosure(function(self, ...)
+                if not AgentEnv.RemoteSpyActive then
+                    return originalInvokeServer(self, ...)
+                end
+                if not safeCheckcaller() and internalRecordRemote(self, "InvokeServer", {...}) then
+                    return nil
+                end
+                return originalInvokeServer(self, ...)
+            end)
+            local okHook, res = pcall(hookfunction, dummyRemoteFunction.InvokeServer, hookFuncFn)
+            if okHook then
+                originalInvokeServer = res
+                logInfo("Hook", "已啟用 hookfunction(InvokeServer) 備用攔截軌道")
             end
-            return originalFireServer(self, ...)
-        end))
-        dummyRemote:Destroy()
-    end
-
-    if not originalInvokeServer and hookfunction then
-        local dummyFunc = Instance.new("RemoteFunction")
-        originalInvokeServer = hookfunction(dummyFunc.InvokeServer, newcclosure(function(self, ...)
-            if not checkcaller() and internalRecordRemote(self, "InvokeServer", {...}) then
-                return nil
-            end
-            return originalInvokeServer(self, ...)
-        end))
-        dummyFunc:Destroy()
+        end
+    else
+        logWarn("Hook", "當前 Executor 不支援任何 Hook 原語，Remote Spy 無法截獲網絡通訊")
+        return false, "Executor 缺少 Hook 原語"
     end
 
     AgentEnv.RemoteSpyActive = true
-    return true, "Remote Spy 雙軌攔截已啟動"
+    return true, "Remote Spy 攔截已啟動"
 end
 
 function AgentEnv.stopRemoteSpy()
     AgentEnv.RemoteSpyActive = false
-    return true, "Remote Spy 已停止監聽"
+    return true, "Remote Spy 已停止監聽 (零開銷旁路已啟用)"
 end
 
 function AgentEnv.inspectInstance(inst)
     if typeof(inst) ~= "Instance" then return nil, "目標非 Instance 物件" end
 
+    local okFull, fullName = pcall(function() return inst:GetFullName() end)
+    local okParent, parentName = pcall(function()
+        if not inst.Parent then return "nil" end
+        return inst.Parent:GetFullName()
+    end)
+
     local inspection = {
         Name = inst.Name,
         ClassName = inst.ClassName,
-        FullName = (pcall(inst.GetFullName, inst) and inst:GetFullName() or inst.Name),
-        Parent = inst.Parent and (pcall(inst.Parent.GetFullName, inst.Parent) and inst.Parent:GetFullName() or inst.Parent.Name) or "nil",
+        FullName = okFull and fullName or inst.Name,
+        Parent = okParent and parentName or "nil",
         ChildrenCount = #inst:GetChildren(),
         Properties = {},
         Attributes = sanitizeForJSON(inst:GetAttributes()),
@@ -581,28 +773,55 @@ function AgentEnv.setPlayerProperty(prop, value)
     return false
 end
 
+local noclipConnection = nil
+
 function AgentEnv.setNoclip(state)
     AgentEnv.NoclipActive = state
-    if not state and LocalPlayer.Character then
-        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") and (part.Name == "HumanoidRootPart" or part.Name == "UpperTorso" or part.Name == "LowerTorso" or part.Name == "Torso") then
-                part.CanCollide = true
+    if state then
+        if not noclipConnection then
+            noclipConnection = RunService.Stepped:Connect(function()
+                if AgentEnv.NoclipActive and LocalPlayer.Character then
+                    for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+                        if part:IsA("BasePart") and part.CanCollide then
+                            part.CanCollide = false
+                        end
+                    end
+                end
+            end)
+        end
+    else
+        if noclipConnection then
+            pcall(function() noclipConnection:Disconnect() end)
+            noclipConnection = nil
+        end
+        if LocalPlayer.Character then
+            for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+                if part:IsA("BasePart") and (part.Name == "HumanoidRootPart" or part.Name == "UpperTorso" or part.Name == "LowerTorso" or part.Name == "Torso") then
+                    part.CanCollide = true
+                end
             end
         end
     end
 end
 
-RunService.Stepped:Connect(function()
-    if AgentEnv.NoclipActive and LocalPlayer.Character then
-        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") and part.CanCollide then
-                part.CanCollide = false
-            end
-        end
-    end
-end)
-
 getgenv().AgentEnv = AgentEnv
+
+-- 註冊全局釋放回調 (防止重入洩漏)
+getgenv()._BloxAgentCleanup = function()
+    if noclipConnection then
+        pcall(function() noclipConnection:Disconnect() end)
+        noclipConnection = nil
+    end
+    if activeWebSocket then
+        pcall(function()
+            if activeWebSocket.Close then activeWebSocket:Close()
+            elseif activeWebSocket.close then activeWebSocket:close() end
+        end)
+        activeWebSocket = nil
+    end
+    if currentCodeThread then pcall(task.cancel, currentCodeThread) end
+    if currentMainThread then pcall(task.cancel, currentMainThread) end
+end
 
 -- ==================== [ 6. UI 介面構建 ] ====================
 local ScreenGui = Instance.new("ScreenGui")
@@ -644,9 +863,14 @@ local function enableDrag(dragHandle, frame, onClick)
             dragStart = input.Position
             startPos = frame.Position
 
-            input.Changed:Connect(function()
+            local inputChangedConn
+            inputChangedConn = input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then
                     dragging = false
+                    if inputChangedConn then
+                        inputChangedConn:Disconnect()
+                        inputChangedConn = nil
+                    end
                     if totalDragDist < 8 and onClick then
                         onClick()
                     end
@@ -1027,6 +1251,9 @@ PromptEditBox.Text = CurrentSystemPrompt
 PromptEditBox.Parent = PromptScroll
 
 local syncPromptScroll = setupTextServiceScrolling(PromptScroll, PromptEditBox, 35)
+PromptEditBox:GetPropertyChangedSignal("Text"):Connect(function()
+    syncPromptScroll(false)
+end)
 
 local PromptActionFrame = Instance.new("Frame")
 PromptActionFrame.Size = UDim2.new(1, 0, 0, 24)
@@ -1208,7 +1435,7 @@ end)
 local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession, onChunk)
     local cleanModel = (modelName:gsub("^models/", ""))
     local wsUrl = string.format(
-        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=%s",
+        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=%s",
         apiKey
     )
 
@@ -1523,35 +1750,60 @@ local function resetBusyState()
     SubmitBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 250)
 end
 
-SubmitBtn.MouseButton1Click:Connect(function()
-    if isBusy then
-        logWarn("Core", "使用者點擊停止執行...")
-        if activeWebSocket then
-            pcall(function()
-                if activeWebSocket.Close then activeWebSocket:Close()
-                elseif activeWebSocket.close then activeWebSocket:close() end
-            end)
-            activeWebSocket = nil
-        end
-        if currentCodeThread then
-            pcall(task.cancel, currentCodeThread)
-            currentCodeThread = nil
-        end
-        if currentMainThread then
-            pcall(task.cancel, currentMainThread)
-            currentMainThread = nil
-        end
+local function abortCurrentExecution(reason)
+    if activeWebSocket then
+        pcall(function()
+            if activeWebSocket.Close then activeWebSocket:Close()
+            elseif activeWebSocket.close then activeWebSocket:close() end
+        end)
+        activeWebSocket = nil
+    end
 
-        local targetSession = getActiveSession()
-        if #targetSession.history > 0 and targetSession.history[#targetSession.history].role == "user" then
-            table.remove(targetSession.history)
-        end
+    if currentCodeThread then
+        pcall(task.cancel, currentCodeThread)
+        currentCodeThread = nil
+    end
 
-        targetSession.lastOutput = targetSession.lastOutput .. "\n\n[BloxAgent] ⚠️ 已由使用者手動強制停止。"
+    if currentMainThread then
+        pcall(task.cancel, currentMainThread)
+        currentMainThread = nil
+    end
+
+    local targetSession = getActiveSession()
+    if #targetSession.history > 0 and targetSession.history[#targetSession.history].role == "user" then
+        table.remove(targetSession.history)
+    end
+
+    if reason then
+        targetSession.lastOutput = targetSession.lastOutput .. "\n\n[BloxAgent] ⚠️ " .. reason
         ContentLabel.Text = targetSession.lastOutput
         syncDisplayScroll(true)
         saveSessionsToWorkspace()
-        resetBusyState()
+    end
+
+    resetBusyState()
+end
+
+local function checkDangerousLoops(code)
+    if not code or typeof(code) ~= "string" then return true end
+    -- 靜態檢測死循環中是否缺少任何讓步語句 (wait, task.wait, Heartbeat 等)
+    for loopBlock in code:gmatch("while%s+true%s+do(.-)end") do
+        if not loopBlock:find("wait", 1, true) and not loopBlock:find("Heartbeat", 1, true) and not loopBlock:find("Stepped", 1, true) and not loopBlock:find("heartbeat", 1, true) then
+            return false, "檢測到未包含讓步 (Yield/task.wait) 的 while true 死循環，為防止 Roblox 凍結已阻止執行。"
+        end
+    end
+    for loopBlock in code:gmatch("repeat(.-)until%s+false") do
+        if not loopBlock:find("wait", 1, true) and not loopBlock:find("Heartbeat", 1, true) and not loopBlock:find("Stepped", 1, true) and not loopBlock:find("heartbeat", 1, true) then
+            return false, "檢測到未包含讓步 (Yield/task.wait) 的 repeat until false 死循環，為防止 Roblox 凍結已阻止執行。"
+        end
+    end
+    return true, nil
+end
+
+SubmitBtn.MouseButton1Click:Connect(function()
+    if isBusy then
+        logWarn("Core", "使用者點擊停止執行...")
+        abortCurrentExecution("已由使用者手動強制停止。")
         return
     end
 
@@ -1608,14 +1860,7 @@ SubmitBtn.MouseButton1Click:Connect(function()
     local watchdogThread = task.delay(35, function()
         if not isRunFinished and isBusy then
             logWarn("Watchdog", "請求超過 35 秒無回應，看門狗進行自動重置")
-            local activeSess = getActiveSession()
-            activeSess.lastOutput = activeSess.lastOutput .. "\n\n[BloxAgent] ⚠️ 請求逾時 (35 秒 Executor 網路無回應，看門狗已強制釋放)。"
-            ContentLabel.Text = activeSess.lastOutput
-            syncDisplayScroll(true)
-            if currentMainThread then
-                pcall(task.cancel, currentMainThread)
-            end
-            resetBusyState()
+            abortCurrentExecution("請求逾時 (35 秒 Executor 網路無回應，看門狗已強制釋放)。")
         end
     end)
 
@@ -1702,7 +1947,17 @@ SubmitBtn.MouseButton1Click:Connect(function()
             end
             targetSession.lastCode = luaCode
 
-            logInfo("Exec", "代碼提取成功，開始編譯與沙盒載入...")
+            -- 靜態死循環防禦檢測
+            local isSafe, loopErr = checkDangerousLoops(luaCode)
+            if not isSafe then
+                logWarn("Exec", loopErr)
+                targetSession.lastOutput = "✗ " .. loopErr
+                ContentLabel.Text = targetSession.lastOutput
+                syncDisplayScroll(true)
+                return
+            end
+
+            logInfo("Exec", "代碼靜態檢測通過，開始編譯與沙盒載入...")
 
             local capturedLogs = {}
             local func, compileErr
@@ -1719,9 +1974,21 @@ SubmitBtn.MouseButton1Click:Connect(function()
                 runErr = "代碼編譯失敗: " .. tostring(compileErr)
                 logError("Exec", runErr)
             else
-                -- 安全沙盒構建 (阻斷主程序 script)
+                -- 安全沙盒構建 (阻斷主程序 script，包裝 task.wait / wait 自動喂看門狗心跳)
+                local wrappedTask = table.clone(task)
+                local origTaskWait = task.wait
+                wrappedTask.wait = function(...)
+                    AgentEnv.heartbeat()
+                    return origTaskWait(...)
+                end
+
                 local customEnv = {
                     script = nil,
+                    task = wrappedTask,
+                    wait = function(...)
+                        AgentEnv.heartbeat()
+                        return task.wait(...)
+                    end,
                     print = function(...)
                         local str = {}
                         for i = 1, select("#", ...) do
@@ -1768,7 +2035,7 @@ SubmitBtn.MouseButton1Click:Connect(function()
 
                 local TIMEOUT = 15
                 while not finished do
-                    -- 心跳超時判定
+                    -- 心跳超時判定 (若代碼讓步等待中，wrappedTask.wait 會自動調用 heartbeat 重設計時器)
                     if os.clock() - lastWatchdogHeartbeat > TIMEOUT then
                         if currentCodeThread then
                             pcall(task.cancel, currentCodeThread)
