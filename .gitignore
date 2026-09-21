@@ -1,0 +1,15 @@
+# BloxAgent Workspace & Secrets
+BloxAgent/gemini_key.txt
+BloxAgent/settings.json
+BloxAgent/sessions.json
+BloxAgent/system_prompt.txt
+gemini_key.txt
+settings.json
+sessions.json
+system_prompt.txt
+
+# OS metadata
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
