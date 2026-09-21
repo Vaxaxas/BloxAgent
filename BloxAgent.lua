@@ -15,16 +15,33 @@ local CollectionService = game:GetService("CollectionService")
 local LocalPlayer = Players.LocalPlayer
 
 -- ==================== [ 0. 控制台除錯日誌器 (F9 Console Logger) ] ====================
+-- 保存原生底層原始控制台輸出函數 (支援 UNC clonefunction 穿透)，防止受任何後續 Hook 或重入遞迴污染
+local rawPrint = (clonefunction and type(clonefunction) == "function" and clonefunction(print)) or print
+local rawWarn  = (clonefunction and type(clonefunction) == "function" and clonefunction(warn)) or warn
+local rawError = (clonefunction and type(clonefunction) == "function" and clonefunction(error)) or error
+
+local CurrentApiKey = ""
+
+local function sanitizeSecret(str)
+    if not str then return "" end
+    local s = tostring(str)
+    if CurrentApiKey and #CurrentApiKey > 0 then
+        local escapedKey = CurrentApiKey:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+        s = s:gsub(escapedKey, "REDACTED_KEY")
+    end
+    return s
+end
+
 local function logInfo(tag, msg)
-    print(string.format("[BloxAgent:%s] %s", tag, tostring(msg)))
+    rawPrint(string.format("[BloxAgent:%s] %s", tag, sanitizeSecret(tostring(msg))))
 end
 
 local function logWarn(tag, msg)
-    warn(string.format("[BloxAgent:%s] ⚠️ %s", tag, tostring(msg)))
+    rawWarn(string.format("[BloxAgent:%s] ⚠️ %s", tag, sanitizeSecret(tostring(msg))))
 end
 
 local function logError(tag, msg)
-    warn(string.format("[BloxAgent:%s] ❌ %s", tag, tostring(msg)))
+    rawWarn(string.format("[BloxAgent:%s] ❌ %s", tag, sanitizeSecret(tostring(msg))))
 end
 
 logInfo("Core", "BloxAgent Pro 正在初始化...")
@@ -106,6 +123,8 @@ You have raw, unrestricted access to the entire Roblox DataModel and UNC executo
   * `AgentEnv.setNoclip(boolean)`: Toggle character wall collision.
   * `AgentEnv.setPlayerProperty(prop, value)`: Adjust WalkSpeed, JumpPower, etc.
   * `AgentEnv.heartbeat()`: Pulse execution watchdog heartbeat during long operations.
+  * `AgentEnv.rawPrint(...)`: Directly print to native F9 console, bypassing observation capture hook.
+  * `AgentEnv.writeAuditLog(filename, content)`: Persistently write audit logs to 'BloxAgent/logs/' via writefile.
 
 ================================================================================
 3. ROBLOX SCRIPTING & WATCHDOG SAFETY RULES
@@ -113,39 +132,33 @@ You have raw, unrestricted access to the entire Roblox DataModel and UNC executo
 - NEVER write unbounded busy-loops (`while true do`). Always yield with `task.wait()` or `RunService.Heartbeat:Wait()`.
 - Yielding automatically pulses the Watchdog heartbeat. If a loop runs for >20 seconds without yielding, the Watchdog will preemptively cancel it.
 - Always use `print(...)` to output discovered information, state changes, and findings.
+- If you need to output clean terminal logs without observation buffering, use `AgentEnv.rawPrint(...)`, or write to disk using `AgentEnv.writeAuditLog(filename, content)`.
 - When creating metamethod hooks, ALWAYS verify caller: `if checkcaller() then return oldNamecall(self, ...) end`.
 - When your goal is achieved, or when answering general conceptual questions without needing code execution, respond with clear markdown text without code blocks.
 - If an execution fails with an error traceback, analyze the root cause carefully, explain the mistake briefly, and provide the corrected code block.]===]
 
 local DEFAULT_CONFIG = {
     MODEL = "gemini-2.0-flash",
+    API_FORMAT = "Gemini",         -- 通信協議格式: "Gemini", "OpenAI", "Anthropic"
+    API_URL = "",                  -- 自訂 API 端點 URL (留空則依 API_FORMAT 自動套用預設值)
     THINK_LEVEL = "Medium",
-    MAX_HISTORY = 12,
-    AUTO_EXECUTE = true,       -- 自動執行模型生成的 Luau 代碼 (若為 false 需手動確認批准)
-    AUTO_COMPACT = true,       -- 自動上下文壓縮治理 (防範 Context Rot)
-    COMPACT_THRESHOLD = 8,     -- 當歷史達到 8 輪時觸發記憶壓縮提煉
+    MAX_HISTORY = 40,
+    AUTO_EXECUTE = true,           -- 自動執行模型生成的 Luau 代碼 (若為 false 需手動確認批准)
+    AUTO_COMPACT = true,           -- 自動上下文壓縮治理 (快達到上限時觸發)
+    COMPACT_RATIO_PERCENT = 80,    -- 上下文容量觸發比例 (50% ~ 95%, 預設 80% 快達上限時觸發)
+    CONTEXT_LIMIT_OVERRIDE = 0,    -- 自訂上下文 Token 上限 (0 表示依模型自動判定: Flash 1M / Pro 2M)
     PC_TOGGLE_KEY = "RightControl",
     GUI_TRANSPARENCY = 0.05,
-    GUI_SCALE = 1.0,           -- GUI 整體縮放比例 (0.5 ~ 2.0)
-    COMM_METHOD = "HTTP",      -- 通信方式: "HTTP" (標準 REST) 或 "WebSocket" (Bidi 雙向串流)
-    WS_TIMEOUT = 25,           -- WebSocket 等待逾時 (waitStart 判定秒數, 預設 25s)
-    WATCHDOG_TIMEOUT = 20,     -- 代碼執行防死循環看門狗超時 (秒, 預設 20s)
-    TEMPERATURE = 0.1,         -- 生成溫度 (0.0 ~ 1.0)
-    MAX_OUTPUT_TOKENS = 8192   -- 最大生成 Token 數
+    GUI_SCALE = 1.0,               -- GUI 整體縮放比例 (0.5 ~ 2.0)
+    COMM_METHOD = "HTTP",          -- 通信方式: "HTTP" (標準 REST) 或 "WebSocket" (Bidi 雙向串流)
+    WS_TIMEOUT = 25,               -- WebSocket 等待逾時 (waitStart 判定秒數, 預設 25s)
+    WATCHDOG_TIMEOUT = 20,         -- 代碼執行防死循環看門狗超時 (秒, 預設 20s)
+    TEMPERATURE = 0.1,             -- 生成溫度 (0.0 ~ 1.0)
+    MAX_OUTPUT_TOKENS = 8192       -- 最大生成 Token 數
 }
 
 local Config = table.clone(DEFAULT_CONFIG)
-local CurrentApiKey = ""
 local CurrentSystemPrompt = DEFAULT_SYSTEM_INSTRUCTION
-
-local function sanitizeSecret(str)
-    if not str then return "" end
-    local s = tostring(str)
-    if CurrentApiKey and #CurrentApiKey > 0 then
-        s = s:gsub(CurrentApiKey, "REDACTED_KEY")
-    end
-    return s
-end
 
 local function ensureWorkspaceFolder()
     if isfolder and makefolder then
@@ -353,6 +366,18 @@ local function loadFromWorkspace()
             for k, v in pairs(parsed) do Config[k] = v end
         end
     end
+    if not Config.API_FORMAT or (Config.API_FORMAT ~= "Gemini" and Config.API_FORMAT ~= "OpenAI" and Config.API_FORMAT ~= "Anthropic") then
+        Config.API_FORMAT = "Gemini"
+    end
+    if not Config.API_URL or typeof(Config.API_URL) ~= "string" then
+        Config.API_URL = ""
+    end
+    if not Config.COMPACT_RATIO_PERCENT then
+        Config.COMPACT_RATIO_PERCENT = 80
+    end
+    if not Config.CONTEXT_LIMIT_OVERRIDE then
+        Config.CONTEXT_LIMIT_OVERRIDE = 0
+    end
 
     local okP, contentP = safeReadFile(PROMPT_FILE)
     if okP and contentP and #contentP > 0 then
@@ -375,6 +400,9 @@ local function loadFromWorkspace()
                             time = sess.createdAt or "00:00:00"
                         })
                     end
+                end
+                if not sess.history then
+                    sess.history = {}
                 end
             end
             SessionManager.List = parsedS.sessions
@@ -554,6 +582,44 @@ local AgentEnv = {
 
 function AgentEnv.heartbeat()
     lastWatchdogHeartbeat = os.clock()
+end
+
+function AgentEnv.rawPrint(...)
+    rawPrint(...)
+end
+
+function AgentEnv.rawWarn(...)
+    rawWarn(...)
+end
+
+function AgentEnv.writeAuditLog(filename, content)
+    filename = tostring(filename or "audit_log.txt"):gsub("[/\\]", ""):gsub("%.%.", "")
+    if filename == "" then filename = "audit_log.txt" end
+    if makefolder and not isfolder(FOLDER_NAME .. "/logs") then
+        pcall(makefolder, FOLDER_NAME .. "/logs")
+    end
+    local path = FOLDER_NAME .. "/logs/" .. filename
+    local text = tostring(content or "")
+    if writefile then
+        if appendfile and isfile and isfile(path) then
+            pcall(appendfile, path, "\n" .. text)
+        else
+            pcall(writefile, path, text)
+        end
+        return true, path
+    end
+    return false, "writefile 函數不可用"
+end
+
+function AgentEnv.readAuditLog(filename)
+    filename = tostring(filename or "audit_log.txt"):gsub("[/\\]", ""):gsub("%.%.", "")
+    if filename == "" then filename = "audit_log.txt" end
+    local path = FOLDER_NAME .. "/logs/" .. filename
+    if isfile and isfile(path) and readfile then
+        local ok, data = pcall(readfile, path)
+        return ok and data or nil
+    end
+    return nil
 end
 
 function AgentEnv.searchInstances(queryName, className, root)
@@ -1025,8 +1091,14 @@ end
 
 getgenv().AgentEnv = AgentEnv
 
+local activeRestoreGlobals = nil
+
 -- 註冊全局釋放回調 (防止重入洩漏)
 getgenv()._BloxAgentCleanup = function()
+    if activeRestoreGlobals then
+        pcall(activeRestoreGlobals)
+        activeRestoreGlobals = nil
+    end
     if noclipConnection then
         pcall(function() noclipConnection:Disconnect() end)
         noclipConnection = nil
@@ -1204,17 +1276,60 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
         }
     }
 
-    local turnsPayload = {}
-    for _, item in ipairs(targetSession.history) do
-        table.insert(turnsPayload, {
-            role = item.role,
-            parts = item.parts
+    local rawTurns = {}
+    if targetSession and targetSession.history then
+        for _, item in ipairs(targetSession.history) do
+            if item.parts and #item.parts > 0 then
+                local validParts = {}
+                for _, p in ipairs(item.parts) do
+                    if (p.text and #p.text > 0) or p.functionCall or p.functionResponse or p.inlineData then
+                        table.insert(validParts, p)
+                    end
+                end
+                if #validParts > 0 then
+                    table.insert(rawTurns, {
+                        role = item.role or "user",
+                        parts = validParts
+                    })
+                end
+            end
+        end
+    end
+    if userPrompt and #userPrompt > 0 then
+        table.insert(rawTurns, {
+            role = "user",
+            parts = { { text = userPrompt } }
         })
     end
-    table.insert(turnsPayload, {
-        role = "user",
-        parts = { { text = userPrompt } }
-    })
+
+    local turnsPayload = {}
+    for _, item in ipairs(rawTurns) do
+        if #turnsPayload > 0 and turnsPayload[#turnsPayload].role == item.role then
+            for _, p in ipairs(item.parts) do
+                table.insert(turnsPayload[#turnsPayload].parts, p)
+            end
+        else
+            local clonedParts = {}
+            for _, p in ipairs(item.parts) do
+                table.insert(clonedParts, p)
+            end
+            table.insert(turnsPayload, {
+                role = item.role,
+                parts = clonedParts
+            })
+        end
+    end
+
+    while #turnsPayload > 0 and turnsPayload[1].role ~= "user" do
+        table.remove(turnsPayload, 1)
+    end
+
+    if #turnsPayload == 0 then
+        table.insert(turnsPayload, {
+            role = "user",
+            parts = { { text = "Hello" } }
+        })
+    end
 
     local clientTurnPayload = {
         clientContent = {
@@ -1337,23 +1452,127 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
     return true, fullReply, fullThinking
 end
 
+local function resolveApiEndpoint(format, customUrl, modelName, apiKey)
+    local cleanModel = (modelName or ""):gsub("^models/", "")
+    format = format or "Gemini"
+    local cUrl = customUrl and customUrl:match("^%s*(.-)%s*$") or ""
+
+    local queryPart = ""
+    if cUrl:find("?") then
+        local base, q = cUrl:match("^(.-)%?(.*)$")
+        if base and q then
+            cUrl = base
+            queryPart = "?" .. q
+        end
+    end
+    cUrl = cUrl:gsub("/+$", "")
+
+    if format == "OpenAI" then
+        if cUrl == "" then
+            return "https://api.openai.com/v1/chat/completions"
+        end
+        if cUrl:find("/chat/completions", 1, true) then
+            return cUrl .. queryPart
+        elseif cUrl:find("/v1", 1, true) then
+            return cUrl .. "/chat/completions" .. queryPart
+        else
+            return cUrl .. "/v1/chat/completions" .. queryPart
+        end
+    elseif format == "Anthropic" then
+        if cUrl == "" then
+            return "https://api.anthropic.com/v1/messages"
+        end
+        if cUrl:find("/messages", 1, true) then
+            return cUrl .. queryPart
+        elseif cUrl:find("/v1", 1, true) then
+            return cUrl .. "/messages" .. queryPart
+        else
+            return cUrl .. "/v1/messages" .. queryPart
+        end
+    else -- Gemini
+        local k = apiKey or ""
+        if cUrl == "" then
+            return string.format("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cleanModel, k)
+        end
+        if cUrl:find(":generateContent", 1, true) then
+            if queryPart:find("key=") or cUrl:find("key=") then
+                return cUrl .. queryPart
+            else
+                local sep = (queryPart ~= "") and "&" or "?"
+                return string.format("%s%s%skey=%s", cUrl, queryPart, sep, k)
+            end
+        else
+            local sep = (queryPart ~= "") and "&" or "?"
+            local keyParam = string.format("%skey=%s", sep, k)
+            if cUrl:find("/models$", 1, false) or cUrl:sub(-7) == "/models" then
+                return string.format("%s/%s:generateContent%s%s", cUrl, cleanModel, queryPart, keyParam)
+            elseif cUrl:sub(-7) == "/v1beta" or cUrl:sub(-3) == "/v1" then
+                return string.format("%s/models/%s:generateContent%s%s", cUrl, cleanModel, queryPart, keyParam)
+            else
+                return string.format("%s/v1beta/models/%s:generateContent%s%s", cUrl, cleanModel, queryPart, keyParam)
+            end
+        end
+    end
+end
+
 local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
     local cleanModel = (modelName:gsub("^models/", ""))
-    local endpoint = string.format("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cleanModel, apiKey)
+    local endpoint = resolveApiEndpoint("Gemini", Config.API_URL, cleanModel, apiKey)
 
-    logInfo("HTTP", "正在發起 sUNC HTTP 請求至: " .. cleanModel)
+    logInfo("HTTP", "正在發起 sUNC HTTP 請求至: " .. cleanModel .. " (" .. endpoint .. ")")
 
-    local contents = {}
-    for _, item in ipairs(targetSession.history) do
-        table.insert(contents, {
-            role = item.role,
-            parts = item.parts
-        })
+    local rawItems = {}
+    if targetSession and targetSession.history then
+        for _, item in ipairs(targetSession.history) do
+            if item.parts and #item.parts > 0 then
+                local validParts = {}
+                for _, p in ipairs(item.parts) do
+                    if (p.text and #p.text > 0) or p.functionCall or p.functionResponse or p.inlineData then
+                        table.insert(validParts, p)
+                    end
+                end
+                if #validParts > 0 then
+                    table.insert(rawItems, {
+                        role = item.role or "user",
+                        parts = validParts
+                    })
+                end
+            end
+        end
     end
     if userPrompt and #userPrompt > 0 then
-        table.insert(contents, {
+        table.insert(rawItems, {
             role = "user",
             parts = { { text = userPrompt } }
+        })
+    end
+
+    local contents = {}
+    for _, item in ipairs(rawItems) do
+        if #contents > 0 and contents[#contents].role == item.role then
+            for _, p in ipairs(item.parts) do
+                table.insert(contents[#contents].parts, p)
+            end
+        else
+            local clonedParts = {}
+            for _, p in ipairs(item.parts) do
+                table.insert(clonedParts, p)
+            end
+            table.insert(contents, {
+                role = item.role,
+                parts = clonedParts
+            })
+        end
+    end
+
+    while #contents > 0 and contents[1].role ~= "user" do
+        table.remove(contents, 1)
+    end
+
+    if #contents == 0 then
+        table.insert(contents, {
+            role = "user",
+            parts = { { text = "Hello" } }
         })
     end
 
@@ -1382,7 +1601,7 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
 
     local encodedBody = safeJSONEncode(payload)
     if not encodedBody then
-        return false, "請求 Payload JSON 編碼失敗", "", {}, {}
+        return false, "請求 Payload JSON 編碼失敗", "", {}, {}, {}
     end
 
     local headers = {
@@ -1411,7 +1630,7 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
     if not reqOk or not response then
         local errMsg = sanitizeSecret("sUNC 網路請求異常: " .. tostring(reqErr or "未知錯誤"))
         logError("HTTP", errMsg)
-        return false, errMsg, "", {}, {}
+        return false, errMsg, "", {}, {}, {}
     end
 
     local statusCode = response.StatusCode
@@ -1434,21 +1653,25 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
         if statusCode == 503 then
             friendlyHint = "\n💡 提示：此模型當前伺服器流量過載，通常為暫時性，請稍後再試，或更換模型。"
         elseif statusCode == 404 then
-            friendlyHint = "\n💡 提示：模型不存在或此 API 版本不支援，請確認模型名稱。"
+            if apiKey and apiKey:sub(1, 3) == "sk-" then
+                friendlyHint = "\n💡 提示：模型端點回傳 404，且檢測到您的金鑰以 sk- 開頭！您的代理端點通常為【OpenAI 相容協議】(/v1/chat/completions)。請在設定面板中將「1. API 協議與格式」切換為【OpenAI 相容】即可正常連通！"
+            else
+                friendlyHint = "\n💡 提示：模型不存在或此 API 版本不支援，請確認模型名稱與端點 URL。若使用第三方轉發代理，請確認是否應選擇【OpenAI 相容】協議。"
+            end
         elseif statusCode == 401 or statusCode == 403 then
             friendlyHint = "\n💡 提示：API Key 無效或權限不足，請檢查金鑰。"
         end
 
         local finalErrMsg = sanitizeSecret(string.format("HTTP 請求失敗 (狀態碼 %s)%s%s", tostring(statusCode or "中斷"), detailedMsg, friendlyHint))
         logError("HTTP", finalErrMsg)
-        return false, finalErrMsg, "", {}, {}
+        return false, finalErrMsg, "", {}, {}, {}
     end
 
     local data = safeJSONDecode(body)
     if not data or typeof(data) ~= "table" then
         local parseErrMsg = sanitizeSecret("JSON 解析失敗: " .. tostring(body):sub(1, 100))
         logError("HTTP", parseErrMsg)
-        return false, "伺服器返回非有效 JSON 格式", "", {}, {}
+        return false, "伺服器返回非有效 JSON 格式", "", {}, {}, {}
     end
 
     local replyText = ""
@@ -1470,24 +1693,614 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
         end
     end
 
+    local usageMetadata = data.usageMetadata or {}
+
     if replyText == "" and thoughtText == "" and #functionCalls == 0 then
         logWarn("HTTP", "API 未回傳文本或工具調用內容")
-        return false, "API 未回傳有效內容 (可能觸發安全過濾或 Token 超限)", "", {}, {}
+        return false, "API 未回傳有效內容 (可能觸發安全過濾或 Token 超限)", "", {}, {}, usageMetadata
     end
 
-    logInfo("HTTP", string.format("HTTP 通信成功 (回覆長度: %d, 思考長度: %d, 工具調用: %d)", #replyText, #thoughtText, #functionCalls))
-    return true, replyText, thoughtText, functionCalls, rawParts
+    logInfo("HTTP", string.format("HTTP 通信成功 (回覆長度: %d, 思考長度: %d, 工具調用: %d, 總 Token: %s)",
+        #replyText, #thoughtText, #functionCalls, tostring(usageMetadata.totalTokenCount or "估算中")))
+    return true, replyText, thoughtText, functionCalls, rawParts, usageMetadata
+end
+
+local function callOpenAIHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
+    local endpoint = resolveApiEndpoint("OpenAI", Config.API_URL, modelName, apiKey)
+    logInfo("OpenAI", "正在發起 OpenAI 相容 HTTP 請求至: " .. tostring(modelName) .. " (" .. endpoint .. ")")
+
+    local rawItems = {}
+    if targetSession and targetSession.history then
+        for _, item in ipairs(targetSession.history) do
+            local role = (item.role == "model" or item.role == "assistant") and "assistant" or "user"
+            local text = ""
+            if item.parts then
+                for _, p in ipairs(item.parts) do
+                    if p.text then text = text .. p.text end
+                end
+            elseif item.content then
+                text = tostring(item.content)
+            end
+            local trimmed = text:match("^%s*(.-)%s*$")
+            if trimmed and #trimmed > 0 then
+                table.insert(rawItems, { role = role, content = trimmed })
+            end
+        end
+    end
+
+    if userPrompt and #userPrompt > 0 then
+        local trimmedPrompt = userPrompt:match("^%s*(.-)%s*$")
+        if trimmedPrompt and #trimmedPrompt > 0 then
+            table.insert(rawItems, { role = "user", content = trimmedPrompt })
+        end
+    end
+
+    local messages = {}
+    if CurrentSystemPrompt and #CurrentSystemPrompt > 0 then
+        table.insert(messages, {
+            role = "system",
+            content = CurrentSystemPrompt
+        })
+    end
+
+    -- 合併相鄰同角色訊息（高度相容轉發至 Claude/Gemini 後端的反向代理與 strict 檢查服務）
+    for _, item in ipairs(rawItems) do
+        if #messages > 0 and messages[#messages].role == item.role then
+            messages[#messages].content = messages[#messages].content .. "\n\n" .. item.content
+        else
+            table.insert(messages, {
+                role = item.role,
+                content = item.content
+            })
+        end
+    end
+
+    if #messages == 0 or (#messages == 1 and messages[1].role == "system") then
+        table.insert(messages, { role = "user", content = "Hello" })
+    end
+
+    local maxTokens = tonumber(Config.MAX_OUTPUT_TOKENS) or 8192
+    local mLower = string.lower(tostring(modelName or ""))
+    local isOseries = (mLower:find("^o[134]") or mLower:find("%-o[134]") or mLower:find("/o[134]")) ~= nil
+    local isReasoner = isOseries or (mLower:find("reasoner", 1, true) ~= nil)
+
+    local payload = {
+        model = modelName,
+        messages = messages
+    }
+
+    if isOseries then
+        -- OpenAI o1/o3/o4 系列使用 max_completion_tokens，且不支援自訂 temperature
+        payload.max_completion_tokens = maxTokens
+        if thinkLevel and thinkLevel ~= "Off" then
+            if thinkLevel == "Low" then payload.reasoning_effort = "low"
+            elseif thinkLevel == "Medium" then payload.reasoning_effort = "medium"
+            elseif thinkLevel == "High" then payload.reasoning_effort = "high"
+            end
+        end
+    else
+        -- 標準模型 (GPT-4o, DeepSeek, Qwen, Claude via proxy, Llama 等)
+        payload.max_tokens = maxTokens
+        -- 注意：DeepSeek-Reasoner (R1) 嚴格禁止傳遞 temperature，否則返回 400 錯誤
+        if not isReasoner then
+            payload.temperature = tonumber(Config.TEMPERATURE) or 0.1
+        end
+    end
+
+    local encodedBody = safeJSONEncode(payload)
+    if not encodedBody then
+        return false, "請求 Payload JSON 編碼失敗", "", {}, {}, {}
+    end
+
+    local headers = {
+        ["Content-Type"] = "application/json"
+    }
+    if apiKey and #apiKey > 0 then
+        headers["Authorization"] = "Bearer " .. apiKey
+    end
+
+    local reqOk, response, reqErr
+    for attempt = 1, 2 do
+        reqOk, response, reqErr = universalHttpRequest(endpoint, "POST", headers, encodedBody)
+        if reqOk and response then
+            local code = response.StatusCode
+            if code == 503 or code == 429 then
+                if attempt == 1 then
+                    logWarn("OpenAI", string.format("伺服器回傳狀態碼 %d (高負載/限流)，自動於 1.5 秒後進行重試...", code))
+                    task.wait(1.5)
+                end
+            else
+                break
+            end
+        else
+            break
+        end
+    end
+
+    if not reqOk or not response then
+        local errMsg = sanitizeSecret("sUNC 網路請求異常: " .. tostring(reqErr or "未知錯誤"))
+        logError("OpenAI", errMsg)
+        return false, errMsg, "", {}, {}, {}
+    end
+
+    local statusCode = response.StatusCode
+    local body = response.Body
+
+    logInfo("OpenAI", string.format("HTTP 伺服器響應狀態碼: %s", tostring(statusCode or "無")))
+
+    if statusCode ~= 200 then
+        local detailedMsg = ""
+        if body and #body > 0 then
+            local errJson = safeJSONDecode(body)
+            if errJson then
+                if errJson.error then
+                    if typeof(errJson.error) == "table" then
+                        detailedMsg = string.format(" [%s]", tostring(errJson.error.message or errJson.error.code or "未知錯誤"))
+                    else
+                        detailedMsg = string.format(" [%s]", tostring(errJson.error))
+                    end
+                elseif errJson.message then
+                    detailedMsg = string.format(" [%s]", tostring(errJson.message))
+                elseif errJson.detail then
+                    detailedMsg = string.format(" [%s]", tostring(errJson.detail))
+                else
+                    detailedMsg = " [" .. (body:sub(1, 160)) .. "]"
+                end
+            else
+                detailedMsg = " [" .. (body:sub(1, 160)) .. "]"
+            end
+        end
+
+        local friendlyHint = ""
+        if statusCode == 429 then
+            friendlyHint = "\n💡 提示：API 額度已耗盡或觸發頻率限制 (Rate Limit)，請確認金鑰配額。"
+        elseif statusCode == 401 then
+            friendlyHint = "\n💡 提示：API Key 無效或未授權，請檢查金鑰。"
+        elseif statusCode == 404 then
+            friendlyHint = "\n💡 提示：模型不存在或端點 URL 錯誤，請確認 Model 名稱與 API URL。"
+        elseif statusCode == 400 then
+            friendlyHint = "\n💡 提示：請求參數錯誤，請檢查模型名稱與所傳參數是否相容。"
+        end
+
+        local finalErrMsg = sanitizeSecret(string.format("OpenAI 請求失敗 (狀態碼 %s)%s%s", tostring(statusCode or "中斷"), detailedMsg, friendlyHint))
+        logError("OpenAI", finalErrMsg)
+        return false, finalErrMsg, "", {}, {}, {}
+    end
+
+    local data = safeJSONDecode(body)
+    if not data or typeof(data) ~= "table" then
+        local parseErrMsg = sanitizeSecret("JSON 解析失敗: " .. tostring(body):sub(1, 100))
+        logError("OpenAI", parseErrMsg)
+        return false, "伺服器返回非有效 JSON 格式", "", {}, {}, {}
+    end
+
+    local replyText = ""
+    local thoughtText = ""
+
+    if data.choices and data.choices[1] and data.choices[1].message then
+        local msg = data.choices[1].message
+
+        if typeof(msg.content) == "table" then
+            for _, part in ipairs(msg.content) do
+                if typeof(part) == "table" and part.text then
+                    replyText = replyText .. part.text
+                elseif typeof(part) == "string" then
+                    replyText = replyText .. part
+                end
+            end
+        elseif typeof(msg.content) == "string" then
+            replyText = msg.content
+        end
+
+        if msg.reasoning_content and #tostring(msg.reasoning_content) > 0 then
+            thoughtText = tostring(msg.reasoning_content)
+        elseif msg.reasoning and #tostring(msg.reasoning) > 0 then
+            thoughtText = tostring(msg.reasoning)
+        elseif msg.thought and #tostring(msg.thought) > 0 then
+            thoughtText = tostring(msg.thought)
+        end
+    end
+
+    -- DeepSeek R1 / Reasoning 容錯：若思考鏈包覆在 <think>...</think> 中
+    if thoughtText == "" and replyText:find("<think>") then
+        local thinkInside = replyText:match("<think>%s*(.-)%s*</think>")
+        if thinkInside then
+            thoughtText = thinkInside
+            replyText = replyText:gsub("<think>%s*.-%s*</think>%s*", "")
+        else
+            local openThink = replyText:match("<think>%s*(.*)")
+            if openThink then
+                thoughtText = openThink
+                replyText = ""
+            end
+        end
+    end
+
+    local usageMetadata = {}
+    if data.usage then
+        usageMetadata.totalTokenCount = tonumber(data.usage.total_tokens)
+        usageMetadata.promptTokenCount = tonumber(data.usage.prompt_tokens)
+        usageMetadata.candidatesTokenCount = tonumber(data.usage.completion_tokens)
+    end
+
+    if replyText == "" and thoughtText == "" then
+        logWarn("OpenAI", "API 未回傳文本內容")
+        return false, "API 未回傳有效內容 (可能觸發過濾或 Token 超限)", "", {}, {}, usageMetadata
+    end
+
+    logInfo("OpenAI", string.format("OpenAI 通信成功 (回覆長度: %d, 思考長度: %d, 總 Token: %s)",
+        #replyText, #thoughtText, tostring(usageMetadata.totalTokenCount or "估算中")))
+    return true, replyText, thoughtText, {}, {}, usageMetadata
+end
+
+local function callAnthropicHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
+    local endpoint = resolveApiEndpoint("Anthropic", Config.API_URL, modelName, apiKey)
+    logInfo("Anthropic", "正在發起 Anthropic Claude HTTP 請求至: " .. tostring(modelName) .. " (" .. endpoint .. ")")
+
+    local rawItems = {}
+    if targetSession and targetSession.history then
+        for _, item in ipairs(targetSession.history) do
+            local role = (item.role == "model" or item.role == "assistant") and "assistant" or "user"
+            local text = ""
+            if item.parts then
+                for _, p in ipairs(item.parts) do
+                    if p.text then text = text .. p.text end
+                end
+            elseif item.content then
+                text = tostring(item.content)
+            end
+            local trimmed = text:match("^%s*(.-)%s*$")
+            if trimmed and #trimmed > 0 then
+                table.insert(rawItems, { role = role, content = trimmed })
+            end
+        end
+    end
+
+    if userPrompt and #userPrompt > 0 then
+        local trimmedPrompt = userPrompt:match("^%s*(.-)%s*$")
+        if trimmedPrompt and #trimmedPrompt > 0 then
+            table.insert(rawItems, { role = "user", content = trimmedPrompt })
+        end
+    end
+
+    -- Anthropic 規則：交替 user/assistant，連續相同 role 需合併，且開頭與結尾必須符合規範
+    local messages = {}
+    for _, item in ipairs(rawItems) do
+        if #messages > 0 and messages[#messages].role == item.role then
+            messages[#messages].content = messages[#messages].content .. "\n\n" .. item.content
+        else
+            table.insert(messages, {
+                role = item.role,
+                content = item.content
+            })
+        end
+    end
+
+    -- 確保開頭角色必為 user
+    while #messages > 0 and messages[1].role ~= "user" do
+        table.remove(messages, 1)
+    end
+
+    if #messages == 0 then
+        table.insert(messages, { role = "user", content = "Hello" })
+    end
+
+    -- 確保結尾角色若為 assistant 則追加提示，避免 Extended Thinking 因 prefilling 報錯
+    if messages[#messages].role == "assistant" then
+        table.insert(messages, { role = "user", content = "請繼續執行下一步。" })
+    end
+
+    local maxTokens = tonumber(Config.MAX_OUTPUT_TOKENS) or 8192
+    local mLower = string.lower(tostring(modelName or ""))
+    local supportsThinking = (mLower:find("3%-7") or mLower:find("3%.7") or mLower:find("thinking")) ~= nil
+
+    local payload = {
+        model = modelName,
+        messages = messages,
+        max_tokens = maxTokens
+    }
+
+    if CurrentSystemPrompt and #CurrentSystemPrompt > 0 then
+        payload.system = CurrentSystemPrompt
+    end
+
+    if supportsThinking and thinkLevel and thinkLevel ~= "Off" then
+        local budget = 1024
+        if thinkLevel == "Low" then budget = 1024
+        elseif thinkLevel == "Medium" then budget = 4096
+        elseif thinkLevel == "High" then budget = 8192
+        end
+        if maxTokens <= budget then
+            payload.max_tokens = budget + 1024
+        end
+        payload.thinking = {
+            type = "enabled",
+            budget_tokens = budget
+        }
+        -- Anthropic 規定開啟 thinking 時溫度必須為 1.0 (或不指定)
+        payload.temperature = 1.0
+    else
+        payload.temperature = tonumber(Config.TEMPERATURE) or 0.1
+    end
+
+    local encodedBody = safeJSONEncode(payload)
+    if not encodedBody then
+        return false, "請求 Payload JSON 編碼失敗", "", {}, {}, {}
+    end
+
+    local headers = {
+        ["Content-Type"] = "application/json",
+        ["anthropic-version"] = "2023-06-01"
+    }
+    if apiKey and #apiKey > 0 then
+        headers["x-api-key"] = apiKey
+        headers["Authorization"] = "Bearer " .. apiKey
+    end
+
+    local reqOk, response, reqErr
+    for attempt = 1, 2 do
+        reqOk, response, reqErr = universalHttpRequest(endpoint, "POST", headers, encodedBody)
+        if reqOk and response then
+            local code = response.StatusCode
+            if code == 503 or code == 429 or code == 529 then
+                if attempt == 1 then
+                    logWarn("Anthropic", string.format("伺服器回傳狀態碼 %d (忙碌/限流)，自動於 1.5 秒後進行重試...", code))
+                    task.wait(1.5)
+                end
+            else
+                break
+            end
+        else
+            break
+        end
+    end
+
+    if not reqOk or not response then
+        local errMsg = sanitizeSecret("sUNC 網路請求異常: " .. tostring(reqErr or "未知錯誤"))
+        logError("Anthropic", errMsg)
+        return false, errMsg, "", {}, {}, {}
+    end
+
+    local statusCode = response.StatusCode
+    local body = response.Body
+
+    logInfo("Anthropic", string.format("HTTP 伺服器響應狀態碼: %s", tostring(statusCode or "無")))
+
+    if statusCode ~= 200 then
+        local detailedMsg = ""
+        if body and #body > 0 then
+            local errJson = safeJSONDecode(body)
+            if errJson then
+                if errJson.error then
+                    if typeof(errJson.error) == "table" then
+                        detailedMsg = string.format(" [%s: %s]", tostring(errJson.error.type or "錯誤"), tostring(errJson.error.message or "未知"))
+                    else
+                        detailedMsg = string.format(" [%s]", tostring(errJson.error))
+                    end
+                elseif errJson.message then
+                    detailedMsg = string.format(" [%s]", tostring(errJson.message))
+                elseif errJson.detail then
+                    detailedMsg = string.format(" [%s]", tostring(errJson.detail))
+                else
+                    detailedMsg = " [" .. (body:sub(1, 160)) .. "]"
+                end
+            else
+                detailedMsg = " [" .. (body:sub(1, 160)) .. "]"
+            end
+        end
+
+        local friendlyHint = ""
+        if statusCode == 429 or statusCode == 529 then
+            friendlyHint = "\n💡 提示：Anthropic 伺服器負載過高或觸發頻率限制 (Rate Limit)，請稍後再試。"
+        elseif statusCode == 401 then
+            friendlyHint = "\n💡 提示：Anthropic API Key 無效，請檢查金鑰。"
+        elseif statusCode == 400 then
+            friendlyHint = "\n💡 提示：請求格式或參數不符 (例如 thinking 參數限制或角色交替要求)。"
+        end
+
+        local finalErrMsg = sanitizeSecret(string.format("Anthropic 請求失敗 (狀態碼 %s)%s%s", tostring(statusCode or "中斷"), detailedMsg, friendlyHint))
+        logError("Anthropic", finalErrMsg)
+        return false, finalErrMsg, "", {}, {}, {}
+    end
+
+    local data = safeJSONDecode(body)
+    if not data or typeof(data) ~= "table" then
+        local parseErrMsg = sanitizeSecret("JSON 解析失敗: " .. tostring(body):sub(1, 100))
+        logError("Anthropic", parseErrMsg)
+        return false, "伺服器返回非有效 JSON 格式", "", {}, {}, {}
+    end
+
+    local replyText = ""
+    local thoughtText = ""
+
+    if typeof(data.content) == "table" then
+        for _, blk in ipairs(data.content) do
+            if typeof(blk) == "table" then
+                if blk.type == "text" then
+                    replyText = replyText .. (blk.text or "")
+                elseif blk.type == "thinking" then
+                    thoughtText = thoughtText .. (blk.thinking or "")
+                elseif blk.text then
+                    replyText = replyText .. blk.text
+                end
+            elseif typeof(blk) == "string" then
+                replyText = replyText .. blk
+            end
+        end
+    elseif typeof(data.content) == "string" then
+        replyText = data.content
+    end
+
+    -- 容錯：若反代將思考包覆於 <think> 標籤
+    if thoughtText == "" and replyText:find("<think>") then
+        local thinkInside = replyText:match("<think>%s*(.-)%s*</think>")
+        if thinkInside then
+            thoughtText = thinkInside
+            replyText = replyText:gsub("<think>%s*.-%s*</think>%s*", "")
+        else
+            local openThink = replyText:match("<think>%s*(.*)")
+            if openThink then
+                thoughtText = openThink
+                replyText = ""
+            end
+        end
+    end
+
+    local usageMetadata = {}
+    if data.usage then
+        local inT = tonumber(data.usage.input_tokens) or 0
+        local outT = tonumber(data.usage.output_tokens) or 0
+        usageMetadata.totalTokenCount = inT + outT
+        usageMetadata.promptTokenCount = inT
+        usageMetadata.candidatesTokenCount = outT
+    end
+
+    if replyText == "" and thoughtText == "" then
+        logWarn("Anthropic", "API 未回傳有效文字或思考內容")
+        return false, "API 未回傳有效內容 (可能觸發過濾或 Token 超限)", "", {}, {}, usageMetadata
+    end
+
+    logInfo("Anthropic", string.format("Anthropic 通信成功 (回覆長度: %d, 思考長度: %d, 總 Token: %s)",
+        #replyText, #thoughtText, tostring(usageMetadata.totalTokenCount or "估算中")))
+    return true, replyText, thoughtText, {}, {}, usageMetadata
+end
+
+local function callUnifiedLLM(apiKey, modelName, thinkLevel, userPrompt, targetSession)
+    local fmt = Config.API_FORMAT or "Gemini"
+    if fmt == "OpenAI" then
+        return callOpenAIHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
+    elseif fmt == "Anthropic" then
+        return callAnthropicHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
+    else
+        if Config.COMM_METHOD == "WebSocket" and wsConnect and doesModelSupportBidiWS(modelName) then
+            local ok, wsReply, wsThinking = callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession)
+            if ok then
+                return true, wsReply, wsThinking, {}, {}, {}
+            else
+                logWarn("COMM", "WebSocket 通信失敗，自動降級至 HTTP 模式: " .. tostring(wsReply))
+                return callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
+            end
+        else
+            return callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetSession)
+        end
+    end
+end
+
+local function sendOneShotPrompt(prompt, apiKey, modelName)
+    local dummySession = {
+        history = {},
+        messages = {}
+    }
+    local ok, reply, thinking, _, _, usage = callUnifiedLLM(apiKey, modelName, "Off", prompt, dummySession)
+    return ok, reply, usage
 end
 
 -- ==================== [ 6.5 上下文治理與自動壓縮引擎 (Auto-Compaction) ] ====================
-local function compactSessionHistory(targetSession, apiKey, modelName)
+-- 前置聲明 UI 綁定元件與渲染回調
+local AgentLoopStatusBadge = nil
+local StepBadge = nil
+local ContextBadge = nil
+local updateContextDisplay = nil
+local updateModelBadge = nil
+local selectApiFormat = nil
+local renderActiveSessionChat = nil
+
+local function formatTokenCount(n)
+    n = tonumber(n) or 0
+    if n >= 1000000 then
+        return string.format("%.1fM", n / 1000000)
+    elseif n >= 1000 then
+        return string.format("%.1fk", n / 1000)
+    else
+        return tostring(math.floor(n))
+    end
+end
+
+local function getModelContextLimit(modelName)
+    local override = tonumber(Config.CONTEXT_LIMIT_OVERRIDE) or 0
+    if override > 0 then
+        return override
+    end
+    local lower = string.lower(tostring(modelName or Config.MODEL or ""))
+    local fmt = Config.API_FORMAT or "Gemini"
+    if fmt == "Anthropic" or lower:find("claude") then
+        return 200000 -- Claude 3.5 / 3.7: 200k tokens
+    elseif fmt == "OpenAI" or lower:find("gpt") or lower:find("o1") or lower:find("o3") or lower:find("deepseek") or lower:find("qwen") then
+        return 128000 -- GPT-4o / DeepSeek / Qwen: 128k tokens
+    elseif lower:find("1%.5%-pro") or lower:find("2%.5%-pro") or lower:find("pro") then
+        return 2097152 -- Gemini Pro: 2,097,152 tokens (~2M)
+    elseif lower:find("flash") then
+        return 1048576 -- Gemini Flash: 1,048,576 tokens (~1M)
+    end
+    return 1048576 -- 預設 1M
+end
+
+local function estimateSessionTokens(session)
+    if not session then return 0 end
+    local totalChars = #tostring(CurrentSystemPrompt or "")
+    for _, item in ipairs(session.history or {}) do
+        if item.parts then
+            for _, p in ipairs(item.parts) do
+                if p.text then
+                    totalChars = totalChars + #p.text
+                end
+            end
+        elseif item.content then
+            totalChars = totalChars + #tostring(item.content)
+        end
+    end
+    local estTokens = math.ceil(totalChars / 3.2)
+    local recorded = tonumber(session.lastTokenCount) or 0
+    return math.max(recorded, estTokens)
+end
+
+local function isNearingContextLimit(session, modelName)
+    if not session or not session.history or #session.history < 4 then
+        return false, 0, 0, 0
+    end
+    local limit = getModelContextLimit(modelName or Config.MODEL)
+    local ratio = (tonumber(Config.COMPACT_RATIO_PERCENT) or 80) / 100
+    local threshold = math.floor(limit * ratio)
+    local currentTokens = estimateSessionTokens(session)
+    return currentTokens >= threshold, currentTokens, limit, threshold
+end
+
+updateContextDisplay = function(session)
+    if not ContextBadge then return end
+    session = session or (getActiveSession and getActiveSession())
+    if not session then return end
+    local tokens = estimateSessionTokens(session)
+    local limit = getModelContextLimit(Config.MODEL)
+    local pct = math.clamp(math.floor((tokens / math.max(1, limit)) * 100), 0, 100)
+    ContextBadge.Text = string.format("%s (%d%%)", formatTokenCount(tokens), pct)
+
+    local warnRatio = tonumber(Config.COMPACT_RATIO_PERCENT) or 80
+    if pct >= warnRatio then
+        ContextBadge.TextColor3 = Color3.fromRGB(255, 90, 90)
+        ContextBadge.BackgroundColor3 = Color3.fromRGB(50, 24, 28)
+    elseif pct >= (warnRatio * 0.75) then
+        ContextBadge.TextColor3 = Color3.fromRGB(255, 200, 80)
+        ContextBadge.BackgroundColor3 = Color3.fromRGB(45, 38, 26)
+    else
+        ContextBadge.TextColor3 = Color3.fromRGB(150, 220, 190)
+        ContextBadge.BackgroundColor3 = Color3.fromRGB(26, 32, 38)
+    end
+end
+
+local function compactSessionHistory(targetSession, apiKey, modelName, isManual, triggerReason)
     if not targetSession or not targetSession.history or #targetSession.history < 4 then
-        return false
+        return false, "對話歷史過短 (至少需 2 輪對話)"
     end
 
-    logInfo("Compact", "觸發上下文自動壓縮 (Auto-Compaction)...")
+    apiKey = apiKey or CurrentApiKey
+    if not apiKey or apiKey:gsub("%s+", "") == "" then
+        return false, "缺少 API Key"
+    end
+
+    local reason = triggerReason or (isManual and "使用者手動要求" or "快接近上下文上限")
+    logInfo("Compact", string.format("觸發上下文壓縮 (原因: %s)...", reason))
     if AgentLoopStatusBadge then
-        AgentLoopStatusBadge.Text = "🔄 上下文治理壓縮中..."
+        AgentLoopStatusBadge.Text = isManual and "🔄 手動記憶壓縮中..." or "🔄 上下文治理壓縮中..."
         AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(255, 200, 100)
     end
 
@@ -1497,7 +2310,7 @@ local function compactSessionHistory(targetSession, apiKey, modelName)
         local r = item.role or "unknown"
         for _, p in ipairs(item.parts or {}) do
             if p.text then
-                table.insert(transcriptLines, string.format("[%s]: %s", r, p.text:sub(1, 600)))
+                table.insert(transcriptLines, string.format("[%s]: %s", r, p.text:sub(1, 800)))
             end
         end
     end
@@ -1510,74 +2323,55 @@ local function compactSessionHistory(targetSession, apiKey, modelName)
 4. 去除冗長的除錯代碼、無效的 Traceback 與過時終端日誌。
 請直接以簡明、條列式的繁體中文 Markdown 輸出摘要事實，不需冗餘問候。]===]
 
-    local cleanModel = (modelName:gsub("^models/", ""))
-    local endpoint = string.format("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cleanModel, apiKey)
-    local payload = {
-        contents = {
+    local cleanModel = ((modelName or Config.MODEL):gsub("^models/", ""))
+    local promptWithTranscript = compactPrompt .. "\n\n=== 執行歷史紀錄 ===\n" .. transcript
+    local reqOk, replyText, usageData = sendOneShotPrompt(promptWithTranscript, apiKey, cleanModel)
+
+    if reqOk and replyText and #replyText > 0 then
+        -- 保留最近對話，並確保與壓縮摘要狀態嚴格交替 (user -> model -> user -> model)
+        local recentHistory = {}
+        local lastItem = targetSession.history[#targetSession.history]
+        if lastItem and lastItem.role == "user" then
+            -- 若當前歷史以 user (例如尚未回應之觀測或提示) 結尾，僅需保留此 pending user 輪次
+            table.insert(recentHistory, lastItem)
+        elseif #targetSession.history >= 2 then
+            -- 若歷史以 model 結尾，保留最後一整輪完整對話 (user, model)
+            table.insert(recentHistory, targetSession.history[#targetSession.history - 1])
+            table.insert(recentHistory, targetSession.history[#targetSession.history])
+        end
+
+        targetSession.history = {
             {
                 role = "user",
-                parts = {
-                    { text = compactPrompt .. "\n\n=== 執行歷史紀錄 ===\n" .. transcript }
-                }
+                parts = { { text = "[系統記憶壓縮 / Context Compaction State]\n以下為先前執行步驟所提煉之環境已知狀態與進度摘要：\n" .. replyText } }
+            },
+            {
+                role = "model",
+                parts = { { text = "已同步當前環境狀態事實摘要，已重置對話歷史以防注意力衰退，準備繼續執行下一步。" } }
             }
-        },
-        generationConfig = {
-            temperature = 0.1,
-            maxOutputTokens = 2048
         }
-    }
-    local encodedBody = safeJSONEncode(payload)
-    if not encodedBody then return false end
-
-    local headers = {
-        ["Content-Type"] = "application/json",
-        ["x-goog-api-key"] = apiKey
-    }
-
-    local reqOk, response = universalHttpRequest(endpoint, "POST", headers, encodedBody)
-    if reqOk and response and response.StatusCode == 200 then
-        local data = safeJSONDecode(response.Body)
-        local summaryText = ""
-        if data and data.candidates and data.candidates[1] and data.candidates[1].content and data.candidates[1].content.parts then
-            for _, pt in ipairs(data.candidates[1].content.parts) do
-                if pt.text then summaryText = summaryText .. pt.text end
-            end
+        for _, rh in ipairs(recentHistory) do
+            table.insert(targetSession.history, rh)
         end
 
-        if #summaryText > 0 then
-            -- 保留最近 1 輪對話
-            local recentHistory = {}
-            if #targetSession.history >= 2 then
-                table.insert(recentHistory, targetSession.history[#targetSession.history - 1])
-                table.insert(recentHistory, targetSession.history[#targetSession.history])
-            end
+        -- 關鍵修復：重設 Token 記數必須精確估算壓縮後的新會話長度，切勿直接取用 sendOneShotPrompt 回傳之舊歷史全量 Token
+        targetSession.lastTokenCount = estimateSessionTokens(targetSession)
 
-            targetSession.history = {
-                {
-                    role = "user",
-                    parts = { { text = "[系統記憶壓縮 / Context Compaction State]\n以下為先前執行步驟所提煉之環境已知狀態與進度摘要：\n" .. summaryText } }
-                },
-                {
-                    role = "model",
-                    parts = { { text = "已同步當前環境狀態事實摘要，已重置對話歷史以防注意力衰退，準備繼續執行下一步。" } }
-                }
-            }
-            for _, rh in ipairs(recentHistory) do
-                table.insert(targetSession.history, rh)
-            end
-
-            table.insert(targetSession.messages, {
-                role = "assistant",
-                text = "🔄 **[上下文治理]** 歷史對話已自動完成語意壓縮（Auto-Compacted），提煉關鍵環境狀態事實並重置冗餘上下文，有效杜絕注意力衰退 (Context Rot)。",
-                time = os.date("%H:%M:%S")
-            })
-            if renderActiveSessionChat then renderActiveSessionChat() end
-            if saveSessionsToWorkspace then saveSessionsToWorkspace() end
-            logInfo("Compact", "上下文壓縮完成！")
-            return true
-        end
+        table.insert(targetSession.messages, {
+            role = "assistant",
+            text = string.format("🔄 **[上下文治理]** 歷史對話已完成語意壓縮（原因：%s），提煉關鍵環境狀態事實並重置冗餘上下文，有效杜絕注意力衰退 (Context Rot)。", reason),
+            time = os.date("%H:%M:%S")
+        })
+        if renderActiveSessionChat then renderActiveSessionChat() end
+        if saveSessionsToWorkspace then saveSessionsToWorkspace() end
+        if updateContextDisplay then updateContextDisplay(targetSession) end
+        logInfo("Compact", "上下文壓縮完成！壓縮後估計 Token: " .. tostring(targetSession.lastTokenCount))
+        return true
+    else
+        local errMsg = tostring(replyText or "網路或解析異常")
+        logWarn("Compact", "記憶壓縮請求失敗: " .. errMsg)
+        return false, "API 壓縮請求未成功: " .. errMsg
     end
-    return false
 end
 
 -- ==================== [ 7. 高特權 CodeAct 運行時與雙軌看門狗 (Execution Harness) ] ====================
@@ -1607,8 +2401,13 @@ local function executeCodeAct(luaCode)
     local capturedLogs = {}
     local totalChars = 0
     local logTruncated = false
+    local inPrintHook = false
+    local inWarnHook = false
 
     local function addLog(str)
+        if not str then return end
+        -- 消除重複標籤包裝，徹底杜絕重入自身遞增污染 (Reentrancy Tag Accumulation)
+        str = str:gsub("^%[BloxAgent:AgentPrint%]%s*", "")
         if #capturedLogs >= ACI_MAX_LOG_LINES or totalChars >= ACI_MAX_LOG_CHARS then
             if not logTruncated then
                 logTruncated = true
@@ -1618,7 +2417,8 @@ local function executeCodeAct(luaCode)
         end
         totalChars = totalChars + #str
         table.insert(capturedLogs, str)
-        logInfo("AgentPrint", str)
+        -- 穿透使用原生底層 rawPrint 鏡像至 F9 控制台，絕不經過攔截層避免遞迴打爆緩衝區
+        rawPrint(string.format("[BloxAgent:AgentPrint] %s", str))
     end
 
     local safeLoop, loopErr = checkDangerousLoops(luaCode)
@@ -1644,23 +2444,46 @@ local function executeCodeAct(luaCode)
     local baseEnv = (getgenv and getgenv()) or getfenv(0) or _G
     local execEnv = {}
 
-    -- 包裝 print 與 warn 以進行 ACI 輸出捕獲與防洪截斷
+    -- 包裝 print 與 warn 以進行 ACI 輸出捕獲，附帶原子級重入防護 (Reentrancy Lock)
     execEnv.print = function(...)
-        local parts = {}
-        for i = 1, select("#", ...) do
-            local v = select(i, ...)
-            parts[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
+        if inPrintHook then
+            -- 重入防護：若內部再次觸發 print (例如 __tostring 或日誌回呼)，直接轉由底層原生輸出
+            rawPrint(...)
+            return
         end
-        addLog(table.concat(parts, " "))
+        inPrintHook = true
+        local ok, err = pcall(function(...)
+            local parts = {}
+            for i = 1, select("#", ...) do
+                local v = select(i, ...)
+                parts[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
+            end
+            addLog(table.concat(parts, " "))
+        end, ...)
+        inPrintHook = false
+        if not ok then
+            rawPrint(string.format("[BloxAgent:PrintErr] %s", tostring(err)))
+        end
     end
 
     execEnv.warn = function(...)
-        local parts = {}
-        for i = 1, select("#", ...) do
-            local v = select(i, ...)
-            parts[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
+        if inWarnHook then
+            rawWarn(...)
+            return
         end
-        addLog("[Warn] " .. table.concat(parts, " "))
+        inWarnHook = true
+        local ok, err = pcall(function(...)
+            local parts = {}
+            for i = 1, select("#", ...) do
+                local v = select(i, ...)
+                parts[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
+            end
+            addLog("[Warn] " .. table.concat(parts, " "))
+        end, ...)
+        inWarnHook = false
+        if not ok then
+            rawWarn(string.format("[BloxAgent:WarnErr] %s", tostring(err)))
+        end
     end
 
     -- 包裝 task.wait 與 wait，在讓步時自動刷新看門狗心跳時間戳記
@@ -1703,18 +2526,6 @@ local function executeCodeAct(luaCode)
     local returnedValues = {}
     lastWatchdogHeartbeat = os.clock()
 
-    -- 啟動語言虛擬機級別的動態指令計數鉤子 (若執行器支援 debug.sethook)
-    local hasSetHook = false
-    if debug and type(debug.sethook) == "function" then
-        pcall(function()
-            debug.sethook(function()
-                debug.sethook()
-                error("[Watchdog Security] 執行指令突破配額 (10^7 指令)，判定為嚴密無讓步死循環強制中止")
-            end, "", 10000)
-            hasSetHook = true
-        end)
-    end
-
     -- 暫時重定向全域 getgenv().print 與 warn，確保非同步與間接調用亦能被 ACI 捕獲
     local origGenPrint = (getgenv and getgenv().print)
     local origGenWarn = (getgenv and getgenv().warn)
@@ -1723,7 +2534,28 @@ local function executeCodeAct(luaCode)
         getgenv().warn = execEnv.warn
     end
 
+    local function restoreGlobals()
+        activeRestoreGlobals = nil
+        if getgenv then
+            getgenv().print = origGenPrint
+            getgenv().warn = origGenWarn
+        end
+    end
+    activeRestoreGlobals = restoreGlobals
+
     currentCodeThread = task.spawn(function()
+        local hookAttached = false
+        -- 啟動語言虛擬機級別的動態指令計數鉤子 (僅作用於獨立程式碼執行線程，配額 10^7 指令)
+        if debug and type(debug.sethook) == "function" then
+            pcall(function()
+                debug.sethook(function()
+                    debug.sethook()
+                    error("[Watchdog Security] 執行指令突破配額 (10^7 指令)，判定為嚴密無讓步死循環強制中止")
+                end, "", 10000000)
+                hookAttached = true
+            end)
+        end
+
         runOk, runErr = xpcall(function()
             returnedValues = { func(execEnv.print, execEnv.warn, AgentEnv) }
         end, function(err)
@@ -1737,6 +2569,10 @@ local function executeCodeAct(luaCode)
             end
             return table.concat(cleanLines, "\n")
         end)
+
+        if hookAttached and debug and type(debug.sethook) == "function" then
+            pcall(debug.sethook)
+        end
         finished = true
     end)
 
@@ -1755,15 +2591,7 @@ local function executeCodeAct(luaCode)
         task.wait(0.05)
     end
 
-    if hasSetHook and debug and debug.sethook then
-        pcall(debug.sethook)
-    end
-
-    -- 還原全域 print 與 warn
-    if getgenv then
-        getgenv().print = origGenPrint
-        getgenv().warn = origGenWarn
-    end
+    restoreGlobals()
 
     -- 若腳本存在 return 且無 print，將返回值作為輸出觀測捕獲
     if runOk and #capturedLogs == 0 and #returnedValues > 0 then
@@ -2098,15 +2926,22 @@ TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Parent = Header
 
 local ModelBadge = Instance.new("TextLabel")
-ModelBadge.Size = UDim2.new(0.3, 0, 1, 0)
+ModelBadge.Size = UDim2.new(0.45, 0, 1, 0)
 ModelBadge.Position = UDim2.new(0, 185, 0, 0)
 ModelBadge.BackgroundTransparency = 1
-ModelBadge.Text = "[" .. tostring(Config.MODEL) .. "]"
 ModelBadge.Font = Enum.Font.Code
 ModelBadge.TextSize = 10
 ModelBadge.TextColor3 = Color3.fromRGB(120, 220, 255)
 ModelBadge.TextXAlignment = Enum.TextXAlignment.Left
 ModelBadge.Parent = Header
+
+updateModelBadge = function()
+    if ModelBadge then
+        local fmt = Config.API_FORMAT or "Gemini"
+        ModelBadge.Text = string.format("[%s | %s]", fmt, tostring(Config.MODEL))
+    end
+end
+updateModelBadge()
 
 local SettingsBtn = Instance.new("TextButton")
 SettingsBtn.Size = UDim2.new(0, 28, 0, 26)
@@ -2555,7 +3390,7 @@ local function buildAgentCard(msg)
     return card
 end
 
-local function renderActiveSessionChat()
+renderActiveSessionChat = function()
     for _, child in ipairs(ChatScroll:GetChildren()) do
         if child:IsA("Frame") then
             child:Destroy()
@@ -2563,7 +3398,7 @@ local function renderActiveSessionChat()
     end
 
     local sess = getActiveSession()
-    ModelBadge.Text = "[" .. tostring(Config.MODEL) .. "]"
+    if updateModelBadge then updateModelBadge() end
 
     if #sess.messages == 0 then
         local emptyCard = Instance.new("Frame")
@@ -2592,6 +3427,10 @@ local function renderActiveSessionChat()
                 aCard.Parent = ChatScroll
             end
         end
+    end
+
+    if updateContextDisplay then
+        updateContextDisplay(sess)
     end
 
     scrollToBottom()
@@ -2951,33 +3790,123 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- 1. API 金鑰設定
-makeSectionHeader("Google AI Studio API Key", 1)
+-- ==================== [ 1. API 協議與端點格式 (API Provider / Format) ] ====================
+makeSectionHeader("1. API 協議與格式 (API Provider / Format)", 1)
+
+local FORMAT_PRESETS = {
+    Gemini = {
+        name = "Gemini",
+        displayName = "Gemini (Google)",
+        color = Color3.fromRGB(30, 110, 180),
+        urlPlaceholder = "留空使用官方端點 (https://generativelanguage.googleapis.com)",
+        keyPlaceholder = "AIzaSy...",
+        defaultModel = "gemini-2.0-flash",
+        models = { "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.5-flash", "gemini-1.5-pro" },
+        hint = "Google AI Studio 原生協議。支援 Thinking 思考鏈與 2.0-flash-exp Bidi 雙向串流。"
+    },
+    OpenAI = {
+        name = "OpenAI",
+        displayName = "OpenAI 相容",
+        color = Color3.fromRGB(35, 140, 95),
+        urlPlaceholder = "留空為 https://api.openai.com/v1/chat/completions，或自訂 Base URL",
+        keyPlaceholder = "sk-...",
+        defaultModel = "gpt-4o",
+        models = { "gpt-4o", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner" },
+        hint = "相容 OpenAI、DeepSeek、Groq、Ollama、OpenRouter 等。自動解析 DeepSeek-R1 思考鏈。"
+    },
+    Anthropic = {
+        name = "Anthropic",
+        displayName = "Anthropic (Claude)",
+        color = Color3.fromRGB(160, 75, 45),
+        urlPlaceholder = "留空為 https://api.anthropic.com/v1/messages，或自訂/反代端點",
+        keyPlaceholder = "sk-ant-...",
+        defaultModel = "claude-3-7-sonnet-latest",
+        models = { "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest" },
+        hint = "Claude Messages 協議。支援 Extended Thinking 與嚴格 User/Assistant 角色交替。"
+    }
+}
+
+local FormatRow = Instance.new("Frame")
+FormatRow.Size = UDim2.new(1, 0, 0, 26)
+FormatRow.BackgroundTransparency = 1
+FormatRow.LayoutOrder = 1.1
+FormatRow.ZIndex = 62
+FormatRow.Parent = SetScroll
+
+local FormatHintLabel = Instance.new("TextLabel")
+FormatHintLabel.Size = UDim2.new(1, 0, 0, 20)
+FormatHintLabel.BackgroundTransparency = 1
+FormatHintLabel.Font = Enum.Font.Gotham
+FormatHintLabel.TextSize = 9
+FormatHintLabel.TextColor3 = Color3.fromRGB(140, 150, 175)
+FormatHintLabel.TextXAlignment = Enum.TextXAlignment.Left
+FormatHintLabel.TextWrapped = true
+FormatHintLabel.LayoutOrder = 1.2
+FormatHintLabel.ZIndex = 62
+FormatHintLabel.Parent = SetScroll
+
+-- ==================== [ 1.5 自訂 API 端點網址 (Custom API URL) ] ====================
+makeSectionHeader("1.5 自訂 API 端點網址 (Custom API Endpoint URL)", 1.4)
+
+local UrlInputBox = Instance.new("TextBox")
+UrlInputBox.Size = UDim2.new(1, 0, 0, 28)
+UrlInputBox.BackgroundColor3 = Color3.fromRGB(24, 26, 34)
+UrlInputBox.TextColor3 = Color3.fromRGB(130, 220, 180)
+UrlInputBox.PlaceholderText = ""
+UrlInputBox.Text = Config.API_URL or ""
+UrlInputBox.Font = Enum.Font.Code
+UrlInputBox.TextSize = 10
+UrlInputBox.ClearTextOnFocus = false
+UrlInputBox.LayoutOrder = 1.5
+UrlInputBox.ZIndex = 62
+UrlInputBox.Parent = SetScroll
+Instance.new("UICorner", UrlInputBox).CornerRadius = UDim.new(0, 6)
+
+local UrlHintLabel = Instance.new("TextLabel")
+UrlHintLabel.Size = UDim2.new(1, 0, 0, 16)
+UrlHintLabel.BackgroundTransparency = 1
+UrlHintLabel.Font = Enum.Font.Code
+UrlHintLabel.TextSize = 8
+UrlHintLabel.TextColor3 = Color3.fromRGB(110, 120, 145)
+UrlHintLabel.TextXAlignment = Enum.TextXAlignment.Left
+UrlHintLabel.Text = "  💡 留空使用官方端點。支援 Base URL (例如 https://api.deepseek.com/v1) 自動補齊"
+UrlHintLabel.LayoutOrder = 1.6
+UrlHintLabel.ZIndex = 62
+UrlHintLabel.Parent = SetScroll
+
+UrlInputBox.FocusLost:Connect(function()
+    local text = UrlInputBox.Text:match("^%s*(.-)%s*$") or ""
+    Config.API_URL = text
+    saveConfig()
+end)
+
+-- ==================== [ 2. API 金鑰 (API Key) ] ====================
+makeSectionHeader("2. API 金鑰 (API Key)", 2)
 
 local KeyInputBox = Instance.new("TextBox")
 KeyInputBox.Size = UDim2.new(1, 0, 0, 28)
 KeyInputBox.BackgroundColor3 = Color3.fromRGB(24, 26, 34)
 KeyInputBox.TextColor3 = Color3.fromRGB(120, 220, 255)
-KeyInputBox.PlaceholderText = "AIzaSy..."
+KeyInputBox.PlaceholderText = ""
 KeyInputBox.Text = CurrentApiKey
 KeyInputBox.Font = Enum.Font.Code
 KeyInputBox.TextSize = 11
 KeyInputBox.ClearTextOnFocus = false
-KeyInputBox.LayoutOrder = 2
+KeyInputBox.LayoutOrder = 2.1
 KeyInputBox.ZIndex = 62
 KeyInputBox.Parent = SetScroll
 Instance.new("UICorner", KeyInputBox).CornerRadius = UDim.new(0, 6)
 
 KeyInputBox.FocusLost:Connect(function()
     local text = (KeyInputBox.Text:gsub("%s+", ""))
-    if text ~= "" and text ~= CurrentApiKey then
+    if text ~= CurrentApiKey then
         CurrentApiKey = text
         saveApiKey(text)
     end
 end)
 
--- 2. 模型設定
-makeSectionHeader("模型選擇 (Model Selection)", 3)
+-- ==================== [ 3. 模型設定 (Model Selection) ] ====================
+makeSectionHeader("3. 模型選擇 (Model Selection)", 3)
 
 local ModelInputBox = Instance.new("TextBox")
 ModelInputBox.Size = UDim2.new(1, 0, 0, 28)
@@ -2988,7 +3917,7 @@ ModelInputBox.Text = Config.MODEL
 ModelInputBox.Font = Enum.Font.Code
 ModelInputBox.TextSize = 11
 ModelInputBox.ClearTextOnFocus = false
-ModelInputBox.LayoutOrder = 4
+ModelInputBox.LayoutOrder = 3.1
 ModelInputBox.ZIndex = 62
 ModelInputBox.Parent = SetScroll
 Instance.new("UICorner", ModelInputBox).CornerRadius = UDim.new(0, 6)
@@ -2998,38 +3927,100 @@ ModelInputBox.FocusLost:Connect(function()
     if m ~= "" then
         Config.MODEL = m
         saveConfig()
-        ModelBadge.Text = "[" .. m .. "]"
+        if updateModelBadge then updateModelBadge() end
     end
 end)
 
 local ModelButtonsFrame = Instance.new("Frame")
 ModelButtonsFrame.Size = UDim2.new(1, 0, 0, 24)
 ModelButtonsFrame.BackgroundTransparency = 1
-ModelButtonsFrame.LayoutOrder = 5
+ModelButtonsFrame.LayoutOrder = 3.2
 ModelButtonsFrame.ZIndex = 62
 ModelButtonsFrame.Parent = SetScroll
 
-local QUICK_MODELS = { "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.5-flash", "gemini-1.5-pro" }
-for idx, mName in ipairs(QUICK_MODELS) do
-    local qBtn = Instance.new("TextButton")
-    qBtn.Size = UDim2.new(0.24, -2, 1, 0)
-    qBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
-    qBtn.BackgroundColor3 = Color3.fromRGB(36, 40, 52)
-    qBtn.Text = mName:gsub("gemini%-", "")
-    qBtn.Font = Enum.Font.GothamMedium
-    qBtn.TextSize = 9
-    qBtn.TextColor3 = Color3.fromRGB(200, 220, 255)
-    qBtn.ZIndex = 63
-    qBtn.Parent = ModelButtonsFrame
-    Instance.new("UICorner", qBtn).CornerRadius = UDim.new(0, 4)
+local function renderQuickModelButtons(fmtKey)
+    for _, ch in ipairs(ModelButtonsFrame:GetChildren()) do
+        if ch:IsA("GuiObject") then ch:Destroy() end
+    end
+    local preset = FORMAT_PRESETS[fmtKey] or FORMAT_PRESETS.Gemini
+    local models = preset.models or {}
+    local count = #models
+    if count == 0 then return end
+    local btnWidth = 1 / count
 
-    qBtn.MouseButton1Click:Connect(function()
-        Config.MODEL = mName
-        ModelInputBox.Text = mName
-        ModelBadge.Text = "[" .. mName .. "]"
+    for idx, mName in ipairs(models) do
+        local qBtn = Instance.new("TextButton")
+        qBtn.Size = UDim2.new(btnWidth, -2, 1, 0)
+        qBtn.Position = UDim2.new((idx - 1) * btnWidth, 0, 0, 0)
+        local isCur = (Config.MODEL == mName)
+        qBtn.BackgroundColor3 = isCur and Color3.fromRGB(50, 60, 85) or Color3.fromRGB(32, 35, 46)
+        local label = mName:gsub("gemini%-", ""):gsub("claude%-", ""):gsub("%-latest", ""):gsub("deepseek%-", "ds-")
+        qBtn.Text = label
+        qBtn.Font = Enum.Font.GothamMedium
+        qBtn.TextSize = 9
+        qBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 200, 230)
+        qBtn.ZIndex = 63
+        qBtn.Parent = ModelButtonsFrame
+        Instance.new("UICorner", qBtn).CornerRadius = UDim.new(0, 4)
+
+        qBtn.MouseButton1Click:Connect(function()
+            Config.MODEL = mName
+            ModelInputBox.Text = mName
+            if updateModelBadge then updateModelBadge() end
+            saveConfig()
+            renderQuickModelButtons(fmtKey)
+        end)
+    end
+end
+
+local formatButtons = {}
+local FORMAT_KEYS = { "Gemini", "OpenAI", "Anthropic" }
+
+selectApiFormat = function(fmtKey, isInit)
+    Config.API_FORMAT = fmtKey
+    for k, btnData in pairs(formatButtons) do
+        local isCur = (k == fmtKey)
+        btnData.btn.BackgroundColor3 = isCur and btnData.color or Color3.fromRGB(35, 36, 46)
+        btnData.btn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 165, 180)
+    end
+    local preset = FORMAT_PRESETS[fmtKey] or FORMAT_PRESETS.Gemini
+    UrlInputBox.PlaceholderText = preset.urlPlaceholder
+    KeyInputBox.PlaceholderText = preset.keyPlaceholder
+    FormatHintLabel.Text = preset.hint
+    renderQuickModelButtons(fmtKey)
+
+    if not isInit then
+        local isDefaultModel = (Config.MODEL == "gemini-2.0-flash" or Config.MODEL == "gpt-4o" or Config.MODEL == "claude-3-7-sonnet-latest" or Config.MODEL == "")
+        if isDefaultModel then
+            Config.MODEL = preset.defaultModel
+            ModelInputBox.Text = preset.defaultModel
+        end
+        if updateModelBadge then updateModelBadge() end
         saveConfig()
+    end
+end
+
+for idx, fKey in ipairs(FORMAT_KEYS) do
+    local fPreset = FORMAT_PRESETS[fKey]
+    local fBtn = Instance.new("TextButton")
+    fBtn.Size = UDim2.new(0.32, -2, 1, 0)
+    fBtn.Position = UDim2.new((idx - 1) * 0.34, 0, 0, 0)
+    fBtn.BackgroundColor3 = (Config.API_FORMAT == fKey) and fPreset.color or Color3.fromRGB(35, 36, 46)
+    fBtn.Text = fPreset.displayName
+    fBtn.Font = Enum.Font.GothamBold
+    fBtn.TextSize = 10
+    fBtn.TextColor3 = (Config.API_FORMAT == fKey) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 165, 180)
+    fBtn.ZIndex = 63
+    fBtn.Parent = FormatRow
+    Instance.new("UICorner", fBtn).CornerRadius = UDim.new(0, 4)
+
+    formatButtons[fKey] = { btn = fBtn, color = fPreset.color }
+    fBtn.MouseButton1Click:Connect(function()
+        selectApiFormat(fKey, false)
     end)
 end
+
+selectApiFormat(Config.API_FORMAT or "Gemini", true)
 
 -- 3. Agent 執行設置
 makeSectionHeader("Agent 執行設置 (Execution & Tool Options)", 6)
@@ -3085,15 +4076,110 @@ AutoCompactBtn.MouseButton1Click:Connect(function()
     saveConfig()
 end)
 
-makeSectionHeader("壓縮閾值 (Compact Threshold)", 8.5)
+makeSectionHeader("上下文自動壓縮門檻 (Context Threshold)", 8.5)
 makeSlider({
     layoutOrder = 8.6,
-    min = 4, max = 20, step = 2,
-    default = tonumber(Config.COMPACT_THRESHOLD) or 8,
-    format = function(v) return string.format("%d 輪", v) end,
+    min = 50, max = 95, step = 5,
+    default = tonumber(Config.COMPACT_RATIO_PERCENT) or 80,
+    format = function(v) return string.format("達上限 %d%% 時觸發", v) end,
     color = Color3.fromRGB(60, 180, 140),
-    onChange = function(v) Config.COMPACT_THRESHOLD = v end,
+    onChange = function(v)
+        Config.COMPACT_RATIO_PERCENT = v
+        saveConfig()
+        if updateContextDisplay then updateContextDisplay() end
+    end,
 })
+
+makeSectionHeader("上下文容量上限 (Context Limit)", 8.7)
+local LimitRow = Instance.new("Frame")
+LimitRow.Size = UDim2.new(1, 0, 0, 24)
+LimitRow.BackgroundTransparency = 1
+LimitRow.LayoutOrder = 8.8
+LimitRow.ZIndex = 62
+LimitRow.Parent = SetScroll
+
+local CONTEXT_LIMIT_PRESETS = {
+    { label = "自動", value = 0 },
+    { label = "64K", value = 65536 },
+    { label = "128K", value = 131072 },
+    { label = "256K", value = 262144 },
+    { label = "1M", value = 1048576 },
+}
+local limitButtons = {}
+local curLimitOverride = tonumber(Config.CONTEXT_LIMIT_OVERRIDE) or 0
+
+for idx, preset in ipairs(CONTEXT_LIMIT_PRESETS) do
+    local lBtn = Instance.new("TextButton")
+    lBtn.Size = UDim2.new(1 / #CONTEXT_LIMIT_PRESETS, -2, 1, 0)
+    lBtn.Position = UDim2.new((idx - 1) * (1 / #CONTEXT_LIMIT_PRESETS), 0, 0, 0)
+    local isSelected = (curLimitOverride == preset.value)
+    lBtn.BackgroundColor3 = isSelected and Color3.fromRGB(40, 140, 110) or Color3.fromRGB(35, 36, 46)
+    lBtn.Text = preset.label
+    lBtn.Font = Enum.Font.GothamMedium
+    lBtn.TextSize = 10
+    lBtn.TextColor3 = isSelected and Color3.fromRGB(220, 255, 240) or Color3.fromRGB(160, 165, 180)
+    lBtn.ZIndex = 63
+    lBtn.Parent = LimitRow
+    Instance.new("UICorner", lBtn).CornerRadius = UDim.new(0, 4)
+
+    lBtn.MouseButton1Click:Connect(function()
+        Config.CONTEXT_LIMIT_OVERRIDE = preset.value
+        saveConfig()
+        for _, b in ipairs(limitButtons) do
+            b.BackgroundColor3 = Color3.fromRGB(35, 36, 46)
+            b.TextColor3 = Color3.fromRGB(160, 165, 180)
+        end
+        lBtn.BackgroundColor3 = Color3.fromRGB(40, 140, 110)
+        lBtn.TextColor3 = Color3.fromRGB(220, 255, 240)
+        if updateContextDisplay then updateContextDisplay() end
+    end)
+    table.insert(limitButtons, lBtn)
+end
+
+local ManualCompactRow = Instance.new("Frame")
+ManualCompactRow.Size = UDim2.new(1, 0, 0, 26)
+ManualCompactRow.BackgroundTransparency = 1
+ManualCompactRow.LayoutOrder = 8.9
+ManualCompactRow.ZIndex = 62
+ManualCompactRow.Parent = SetScroll
+
+local SetManualCompactBtn = Instance.new("TextButton")
+SetManualCompactBtn.Size = UDim2.new(1, 0, 1, 0)
+SetManualCompactBtn.BackgroundColor3 = Color3.fromRGB(35, 95, 85)
+SetManualCompactBtn.Text = "⚡ 立即手動壓縮記憶 (Compact Now)"
+SetManualCompactBtn.Font = Enum.Font.GothamBold
+SetManualCompactBtn.TextSize = 10
+SetManualCompactBtn.TextColor3 = Color3.fromRGB(215, 250, 240)
+SetManualCompactBtn.ZIndex = 63
+SetManualCompactBtn.Parent = ManualCompactRow
+Instance.new("UICorner", SetManualCompactBtn).CornerRadius = UDim.new(0, 4)
+
+SetManualCompactBtn.MouseButton1Click:Connect(function()
+    local cur = getActiveSession()
+    if not cur or not cur.history or #cur.history < 4 then
+        SetManualCompactBtn.Text = "歷史過短無須壓縮 (至少需 2 輪對話)"
+        task.delay(1.5, function()
+            SetManualCompactBtn.Text = "⚡ 立即手動壓縮記憶 (Compact Now)"
+        end)
+        return
+    end
+    if isBusy then
+        cur.manualCompactRequested = true
+        SetManualCompactBtn.Text = "已預約壓縮 (即將於本輪/下輪執行)"
+        task.delay(1.8, function()
+            SetManualCompactBtn.Text = "⚡ 立即手動壓縮記憶 (Compact Now)"
+        end)
+        return
+    end
+    SetManualCompactBtn.Text = "壓縮中..."
+    task.spawn(function()
+        local ok = compactSessionHistory(cur, CurrentApiKey, Config.MODEL, true, "使用者手動要求")
+        SetManualCompactBtn.Text = ok and "壓縮成功！" or "壓縮失敗"
+        task.delay(1.5, function()
+            SetManualCompactBtn.Text = "⚡ 立即手動壓縮記憶 (Compact Now)"
+        end)
+    end)
+end)
 
 -- 4. 思考深度 (Think Level)
 makeSectionHeader("思考深度 (Think Level)", 9)
@@ -3227,7 +4313,7 @@ CommMethodHint.Size = UDim2.new(1, 0, 0, 16)
 CommMethodHint.BackgroundTransparency = 1
 CommMethodHint.LayoutOrder = 13.6
 CommMethodHint.ZIndex = 62
-CommMethodHint.Text = "  HTTP: 相容所有模型 | WebSocket: 僅限 2.0-flash-exp / realtime 等 Bidi 模型"
+CommMethodHint.Text = "  HTTP: 相容所有端點 (Gemini / OpenAI / Claude) | WebSocket: 僅限 Gemini Bidi 模型"
 CommMethodHint.Font = Enum.Font.Code
 CommMethodHint.TextSize = 8
 CommMethodHint.TextColor3 = Color3.fromRGB(120, 130, 155)
@@ -3304,7 +4390,7 @@ end)
 
 CloseSetBtn.MouseButton1Click:Connect(function()
     SettingsModal.Visible = false
-    ModelBadge.Text = "[" .. tostring(Config.MODEL) .. "]"
+    if updateModelBadge then updateModelBadge() end
 end)
 
 -- ==================== [ 14. 底部輸入與控制列 (Bottom Input Bar) ] ====================
@@ -3322,8 +4408,9 @@ ControlSubRow.Position = UDim2.new(0, 6, 0, 4)
 ControlSubRow.BackgroundTransparency = 1
 ControlSubRow.Parent = BottomBar
 
-local AgentLoopStatusBadge = Instance.new("TextLabel")
-AgentLoopStatusBadge.Size = UDim2.new(0, 130, 1, 0)
+AgentLoopStatusBadge = Instance.new("TextLabel")
+AgentLoopStatusBadge.Size = UDim2.new(0, 102, 1, 0)
+AgentLoopStatusBadge.Position = UDim2.new(0, 0, 0, 0)
 AgentLoopStatusBadge.BackgroundColor3 = Color3.fromRGB(36, 40, 54)
 AgentLoopStatusBadge.Text = "CodeAct: 就緒"
 AgentLoopStatusBadge.Font = Enum.Font.GothamMedium
@@ -3332,9 +4419,9 @@ AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(120, 220, 255)
 AgentLoopStatusBadge.Parent = ControlSubRow
 Instance.new("UICorner", AgentLoopStatusBadge).CornerRadius = UDim.new(0, 4)
 
-local StepBadge = Instance.new("TextLabel")
-StepBadge.Size = UDim2.new(0, 75, 1, 0)
-StepBadge.Position = UDim2.new(0, 136, 0, 0)
+StepBadge = Instance.new("TextLabel")
+StepBadge.Size = UDim2.new(0, 50, 1, 0)
+StepBadge.Position = UDim2.new(0, 106, 0, 0)
 StepBadge.BackgroundColor3 = Color3.fromRGB(36, 40, 54)
 StepBadge.Text = "輪次: 0"
 StepBadge.Font = Enum.Font.Code
@@ -3343,9 +4430,31 @@ StepBadge.TextColor3 = Color3.fromRGB(180, 185, 200)
 StepBadge.Parent = ControlSubRow
 Instance.new("UICorner", StepBadge).CornerRadius = UDim.new(0, 4)
 
+ContextBadge = Instance.new("TextLabel")
+ContextBadge.Size = UDim2.new(0, 74, 1, 0)
+ContextBadge.Position = UDim2.new(0, 160, 0, 0)
+ContextBadge.BackgroundColor3 = Color3.fromRGB(26, 32, 38)
+ContextBadge.Text = "0 (0%)"
+ContextBadge.Font = Enum.Font.Code
+ContextBadge.TextSize = 9.5
+ContextBadge.TextColor3 = Color3.fromRGB(150, 220, 190)
+ContextBadge.Parent = ControlSubRow
+Instance.new("UICorner", ContextBadge).CornerRadius = UDim.new(0, 4)
+
+local CompactBtn = Instance.new("TextButton")
+CompactBtn.Size = UDim2.new(0, 68, 1, 0)
+CompactBtn.Position = UDim2.new(1, -140, 0, 0)
+CompactBtn.BackgroundColor3 = Color3.fromRGB(30, 90, 80)
+CompactBtn.Text = "壓縮記憶"
+CompactBtn.Font = Enum.Font.GothamBold
+CompactBtn.TextSize = 10
+CompactBtn.TextColor3 = Color3.fromRGB(210, 250, 240)
+CompactBtn.Parent = ControlSubRow
+Instance.new("UICorner", CompactBtn).CornerRadius = UDim.new(0, 4)
+
 local ClearChatBtn = Instance.new("TextButton")
-ClearChatBtn.Size = UDim2.new(0, 75, 1, 0)
-ClearChatBtn.Position = UDim2.new(1, -75, 0, 0)
+ClearChatBtn.Size = UDim2.new(0, 68, 1, 0)
+ClearChatBtn.Position = UDim2.new(1, -68, 0, 0)
 ClearChatBtn.BackgroundColor3 = Color3.fromRGB(40, 42, 54)
 ClearChatBtn.Text = "清空對話"
 ClearChatBtn.Font = Enum.Font.GothamMedium
@@ -3354,12 +4463,78 @@ ClearChatBtn.TextColor3 = Color3.fromRGB(200, 205, 215)
 ClearChatBtn.Parent = ControlSubRow
 Instance.new("UICorner", ClearChatBtn).CornerRadius = UDim.new(0, 4)
 
+local isCompacting = false
+CompactBtn.MouseButton1Click:Connect(function()
+    if isCompacting then return end
+    local cur = getActiveSession()
+    if not cur then return end
+
+    if not cur.history or #cur.history < 4 then
+        CompactBtn.Text = "無須壓縮"
+        CompactBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 45)
+        task.delay(1.5, function()
+            CompactBtn.Text = "壓縮記憶"
+            CompactBtn.BackgroundColor3 = Color3.fromRGB(30, 90, 80)
+        end)
+        return
+    end
+
+    local currentKey = CurrentApiKey:gsub("%s+", "")
+    if currentKey == "" then
+        CompactBtn.Text = "缺少 Key"
+        CompactBtn.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
+        task.delay(1.5, function()
+            CompactBtn.Text = "壓縮記憶"
+            CompactBtn.BackgroundColor3 = Color3.fromRGB(30, 90, 80)
+        end)
+        return
+    end
+
+    if isBusy then
+        cur.manualCompactRequested = true
+        CompactBtn.Text = "已預約壓縮"
+        CompactBtn.BackgroundColor3 = Color3.fromRGB(45, 90, 130)
+        task.delay(1.8, function()
+            CompactBtn.Text = "壓縮記憶"
+            CompactBtn.BackgroundColor3 = Color3.fromRGB(30, 90, 80)
+        end)
+        return
+    end
+
+    isCompacting = true
+    CompactBtn.Text = "壓縮中..."
+    CompactBtn.BackgroundColor3 = Color3.fromRGB(160, 110, 30)
+
+    task.spawn(function()
+        local ok = compactSessionHistory(cur, CurrentApiKey, Config.MODEL, true, "使用者手動要求")
+        isCompacting = false
+        if ok then
+            CompactBtn.Text = "已壓縮!"
+            CompactBtn.BackgroundColor3 = Color3.fromRGB(40, 140, 80)
+        else
+            CompactBtn.Text = "壓縮失敗"
+            CompactBtn.BackgroundColor3 = Color3.fromRGB(140, 50, 50)
+        end
+        if not isBusy and AgentLoopStatusBadge then
+            AgentLoopStatusBadge.Text = "CodeAct: 就緒"
+            AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(120, 220, 255)
+        end
+        task.delay(1.8, function()
+            CompactBtn.Text = "壓縮記憶"
+            CompactBtn.BackgroundColor3 = Color3.fromRGB(30, 90, 80)
+        end)
+    end)
+end)
+
 ClearChatBtn.MouseButton1Click:Connect(function()
     local cur = getActiveSession()
     cur.messages = {}
     cur.history = {}
+    cur.lastTokenCount = 0
+    cur.manualCompactRequested = nil
     saveSessionsToWorkspace()
     renderActiveSessionChat()
+    if updateContextDisplay then updateContextDisplay(cur) end
     ClearChatBtn.Text = "已清空"
     task.delay(1.2, function() ClearChatBtn.Text = "清空對話" end)
 end)
@@ -3410,10 +4585,18 @@ local function resetBusyState()
     if StepBadge then
         StepBadge.Text = "輪次: 0"
     end
+    if updateContextDisplay then
+        updateContextDisplay()
+    end
 end
 
 local function abortCurrentExecution(reason)
     currentExecutionId = currentExecutionId + 1
+    if activeRestoreGlobals then
+        pcall(activeRestoreGlobals)
+        activeRestoreGlobals = nil
+    end
+
     if activeWebSocket then
         pcall(function()
             if activeWebSocket.Close then activeWebSocket:Close()
@@ -3532,14 +4715,34 @@ SubmitBtn.MouseButton1Click:Connect(function()
         while isBusy and not loopDone do
             if myExecId ~= currentExecutionId then return end
 
-            -- 1. Auto-Compact 治理檢查：當歷史累積達到閾值時觸發記憶語意壓縮
-            if Config.AUTO_COMPACT and #cur.history >= (tonumber(Config.COMPACT_THRESHOLD or 8) * 2) then
-                compactSessionHistory(cur, CurrentApiKey, Config.MODEL)
+            -- 1. 上下文治理檢查 (快接近上下文上限 或 使用者手動要求壓縮)
+            local shouldCompact = false
+            local compactReason = ""
+            local isManual = false
+
+            if cur.manualCompactRequested then
+                shouldCompact = true
+                compactReason = "使用者手動要求"
+                isManual = true
+                cur.manualCompactRequested = nil
+            elseif Config.AUTO_COMPACT then
+                local nearingLimit, currentTokens, limit, threshold = isNearingContextLimit(cur, Config.MODEL)
+                if nearingLimit then
+                    shouldCompact = true
+                    compactReason = string.format("快接近上下文上限 (已用: %s / 上限: %s, 佔比: %.0f%%)",
+                        formatTokenCount(currentTokens), formatTokenCount(limit), (currentTokens / limit) * 100)
+                    isManual = false
+                end
+            end
+
+            if shouldCompact and cur.history and #cur.history >= 4 then
+                logInfo("Compact", string.format("觸發記憶壓縮: %s", compactReason))
+                compactSessionHistory(cur, CurrentApiKey, Config.MODEL, isManual, compactReason)
                 if myExecId ~= currentExecutionId or not isBusy then return end
             end
 
             if AgentLoopStatusBadge then
-                local commTag = (Config.COMM_METHOD == "WebSocket") and "WS" or "HTTP"
+                local commTag = (Config.COMM_METHOD == "WebSocket" and Config.API_FORMAT == "Gemini") and "WS" or (Config.API_FORMAT or "HTTP")
                 AgentLoopStatusBadge.Text = string.format("CodeAct 推理中 [%s] (第 %d 輪)", commTag, turn)
                 AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(120, 220, 255)
             end
@@ -3561,19 +4764,14 @@ SubmitBtn.MouseButton1Click:Connect(function()
             table.insert(cur.messages, agentMsg)
             renderActiveSessionChat()
 
-            -- CodeAct 模式發起通信 (依設定選擇 HTTP 或 WebSocket)
-            local success, reply, thinking, functionCalls, rawParts
-            if Config.COMM_METHOD == "WebSocket" and wsConnect then
-                success, reply, thinking = callGeminiWebSocket(CurrentApiKey, Config.MODEL, nil, cur)
-                functionCalls = {}
-                rawParts = {}
-                -- WebSocket 失敗時自動降級回 HTTP (Automatic Fallback)
-                if not success then
-                    logWarn("COMM", "WebSocket 通信失敗，自動降級至 HTTP 模式: " .. tostring(reply))
-                    success, reply, thinking, functionCalls, rawParts = callGeminiHTTP(CurrentApiKey, Config.MODEL, Config.THINK_LEVEL, nil, cur)
-                end
-            else
-                success, reply, thinking, functionCalls, rawParts = callGeminiHTTP(CurrentApiKey, Config.MODEL, Config.THINK_LEVEL, nil, cur)
+            -- CodeAct 模式發起通信 (依 API_FORMAT 及 COMM_METHOD 統一分發)
+            local success, reply, thinking, functionCalls, rawParts, usageMetadata = callUnifiedLLM(CurrentApiKey, Config.MODEL, Config.THINK_LEVEL, nil, cur)
+
+            if usageMetadata and usageMetadata.totalTokenCount then
+                cur.lastTokenCount = usageMetadata.totalTokenCount
+                cur.promptTokenCount = usageMetadata.promptTokenCount
+                cur.candidatesTokenCount = usageMetadata.candidatesTokenCount
+                if updateContextDisplay then updateContextDisplay(cur) end
             end
 
             if myExecId ~= currentExecutionId or not isBusy then return end
