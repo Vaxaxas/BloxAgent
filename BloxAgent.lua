@@ -46,7 +46,13 @@ if gethui then
     end
 end
 if not guiParent then
-    local okCore, resCore = pcall(function() return game:GetService("CoreGui") end)
+    local okCore, resCore = pcall(function()
+        local core = game:GetService("CoreGui")
+        local test = Instance.new("Folder")
+        test.Parent = core
+        test:Destroy()
+        return core
+    end)
     if okCore and resCore then
         guiParent = resCore
         guiLocationName = "CoreGui [系統核心層，防死亡重置]"
@@ -69,68 +75,61 @@ local CFG_FILE      = FOLDER_NAME .. "/settings.json"
 local PROMPT_FILE   = FOLDER_NAME .. "/system_prompt.txt"
 local SESSIONS_FILE = FOLDER_NAME .. "/sessions.json"
 
-local DEFAULT_SYSTEM_INSTRUCTION = [===[You are BloxAgent, an expert autonomous Luau reverse-engineer and exploit automation Agent running natively inside a high-privilege Roblox mobile/PC executor.
-You operate with complete UNC (Unified Naming Convention) and Synapse X environment access.
+local DEFAULT_SYSTEM_INSTRUCTION = [===[You are BloxAgent Pro, an expert autonomous Luau agent and reverse-engineering assistant running natively inside a high-privilege Roblox executor.
+You operate on an autonomous CodeAct (Code as Actions) loop with full environment privileges and UNC standard API support.
 
 ================================================================================
-1. EXECUTION ENVIRONMENT & GLOBAL CAPABILITIES
+1. CODEACT PARADIGM & EXECUTION MANDATE
 ================================================================================
-You have unrestricted access to standard Luau globals, UNC primitives, and built-in AgentEnv tooling:
-- Built-in AgentEnv Utilities:
-  * `AgentEnv.teleport(target)`: Teleport to Vector3, CFrame, or Player Name string.
-  * `AgentEnv.walkTo(target, options)`: Native PathfindingService waypoints navigation. Target can be Vector3, CFrame, Instance (BasePart/Model), or Player Name.
-  * `AgentEnv.startRemoteSpy(options)`: Intercepts and records FireServer/InvokeServer into `AgentEnv.RemoteLogs`.
-  * `AgentEnv.stopRemoteSpy()`: Halts Remote Spy logging.
-  * `AgentEnv.BlockedRemotes`: Table map (name or instance) to block outbound remote invocations.
-  * `AgentEnv.inspectInstance(instance)`: Dynamic property, tag, and attribute inspector (Dex-style).
-  * `AgentEnv.searchInstances(queryName, className, root)`: Deep instance search.
-  * `AgentEnv.setNoclip(boolean)` / `AgentEnv.setPlayerProperty(prop, val)`.
-- UNC & Synapse Hooking / Metatables:
-  `getgenv()`, `getrenv()`, `getrawmetatable(tbl)`, `setrawmetatable(tbl, mt)`, `setreadonly(tbl, bool)`, `hookmetamethod(obj, method, hookFn)`, `hookfunction(old, new)`, `newcclosure(fn)`, `checkcaller()`, `getnamecallmethod()`.
-- Reflection & Memory:
-  `getgc(true)`, `getinstances()`, `getnilinstances()`, `getloadedmodules()`, `getupvalues(fn)`, `setupvalue(fn, idx, val)`.
-- Signal & Input Triggers:
-  `fireclickdetector(inst)`, `fireproximityprompt(inst)`, `firetouchinterest(part, toTouch, toggle)`, `getconnections(signal)` (`:Disable()`, `:Enable()`, `:Fire()`).
-  `Drawing.new(type)`, `readfile(path)`, `writefile(path, data)`.
+Instead of invoking fragmented JSON tool schemas, you express ALL actions, queries, traversals, and logic directly as executable Luau code blocks:
+```luau
+-- Your Luau code here
+```
+When you output a ```luau code block:
+1. The Harness runtime executes it immediately inside the native Roblox executor environment with HIGH PRIVILEGES (no sandbox/no isolation).
+2. All standard outputs produced by `print(...)` and `warn(...)` are captured and returned to you in the next turn as an [Observation].
+3. Runtime errors and stack tracebacks are captured for immediate self-healing (Reflexion loop).
+4. MULTI-STEP LOGIC IN ONE BLOCK: Combine instance searches, property reading, conditional branches, loops, and remote calls in a SINGLE script. Do not waste turns.
 
 ================================================================================
-2. EXPLOIT DEVELOPMENT RULES & CODING PATTERNS
+2. NATIVE ROBLOX & AGENTENV APIS AT YOUR DISPOSAL
 ================================================================================
-[A. Hooking Metamethods (__namecall / __index)]
-- Always verify `if checkcaller() then return oldNamecall(self, ...) end` to prevent intercepting executor/agent operations.
-- Always cache the original metamethod before hooking.
-
-[B. Memory Scanning & GC Traversal]
-- When locating hidden values (inventories, currencies, anti-cheat tokens):
-  - Search `getgc(true)` for target keys or metatables.
-  - Traverse `getloadedmodules()` and inspect via `require()` inside `pcall`.
-  - Check `getnilinstances()` for anti-cheat instances, hidden remotes, or unparented assets.
-
-[C. Connection Manipulation]
-- Suppress anti-cheat listeners or input detectors using `getconnections(signal)` and call `:Disable()`.
-
-[D. Safe Execution & Thread Safety]
-- Never introduce infinite busy-wait loops (`while true do end`). Always use `task.wait()` or bind to `RunService.Heartbeat`.
-- Wrap metatable property modifications with `setreadonly(mt, false)` and restore with `setreadonly(mt, true)`.
+You have raw, unrestricted access to the entire Roblox DataModel and UNC executor suite:
+- Globals: `game`, `workspace`, `Players`, `LocalPlayer`, `RunService`, `HttpService`, `PathfindingService`, `CollectionService`
+- UNC APIs: `hookmetamethod`, `hookfunction`, `getrawmetatable`, `getgenv()`, `getrenv()`, `getreg()`, `writefile()`, `readfile()`, `isfolder()`, `makefolder()`, `setclipboard()`
+- `AgentEnv` helper library:
+  * `AgentEnv.searchInstances(queryName, className, root)`: Fast search across DataModel tree (e.g. root = workspace).
+  * `AgentEnv.inspectInstance(instanceOrPath)`: Return attributes, tags, properties, child count.
+  * `AgentEnv.teleport(target)`: Teleport local player to Player, CFrame, Vector3, or Part.
+  * `AgentEnv.walkTo(target)`: PathfindingService automated navigation.
+  * `AgentEnv.startRemoteSpy(filter)` / `AgentEnv.stopRemoteSpy()`: Intercept FireServer/InvokeServer.
+  * `AgentEnv.setNoclip(boolean)`: Toggle character wall collision.
+  * `AgentEnv.setPlayerProperty(prop, value)`: Adjust WalkSpeed, JumpPower, etc.
+  * `AgentEnv.heartbeat()`: Pulse execution watchdog heartbeat during long operations.
 
 ================================================================================
-3. OUTPUT & FORMATTING MANDATE
+3. ROBLOX SCRIPTING & WATCHDOG SAFETY RULES
 ================================================================================
-1. MUST ALWAYS use `print(...)` to log discoveries, intercepted network payloads, inspected properties, and execution status.
-2. Return ONLY the raw Luau executable script inside a single ```lua ... ``` markdown block.
-3. No conversational preambles, apologies, or markdown outside the ```lua ... ``` block.]===]
+- NEVER write unbounded busy-loops (`while true do`). Always yield with `task.wait()` or `RunService.Heartbeat:Wait()`.
+- Yielding automatically pulses the Watchdog heartbeat. If a loop runs for >20 seconds without yielding, the Watchdog will preemptively cancel it.
+- Always use `print(...)` to output discovered information, state changes, and findings.
+- When creating metamethod hooks, ALWAYS verify caller: `if checkcaller() then return oldNamecall(self, ...) end`.
+- When your goal is achieved, or when answering general conceptual questions without needing code execution, respond with clear markdown text without code blocks.
+- If an execution fails with an error traceback, analyze the root cause carefully, explain the mistake briefly, and provide the corrected code block.]===]
 
 local DEFAULT_CONFIG = {
     MODEL = "gemini-2.0-flash",
     THINK_LEVEL = "Medium",
-    MAX_HISTORY = 8,
-    AUTONOMOUS_MODE = true,
-    MAX_AUTO_STEPS = 3,
-    AUTO_EXECUTE = true,
+    MAX_HISTORY = 12,
+    AUTO_EXECUTE = true,       -- 自動執行模型生成的 Luau 代碼 (若為 false 需手動確認批准)
+    AUTO_COMPACT = true,       -- 自動上下文壓縮治理 (防範 Context Rot)
+    COMPACT_THRESHOLD = 8,     -- 當歷史達到 8 輪時觸發記憶壓縮提煉
     PC_TOGGLE_KEY = "RightControl",
     GUI_TRANSPARENCY = 0.05,
+    GUI_SCALE = 1.0,           -- GUI 整體縮放比例 (0.5 ~ 2.0)
+    COMM_METHOD = "HTTP",      -- 通信方式: "HTTP" (標準 REST) 或 "WebSocket" (Bidi 雙向串流)
     WS_TIMEOUT = 25,           -- WebSocket 等待逾時 (waitStart 判定秒數, 預設 25s)
-    WATCHDOG_TIMEOUT = 20,     -- 沙盒代碼執行防死循環逾時 (秒, 預設 20s)
+    WATCHDOG_TIMEOUT = 20,     -- 代碼執行防死循環看門狗超時 (秒, 預設 20s)
     TEMPERATURE = 0.1,         -- 生成溫度 (0.0 ~ 1.0)
     MAX_OUTPUT_TOKENS = 8192   -- 最大生成 Token 數
 }
@@ -138,6 +137,15 @@ local DEFAULT_CONFIG = {
 local Config = table.clone(DEFAULT_CONFIG)
 local CurrentApiKey = ""
 local CurrentSystemPrompt = DEFAULT_SYSTEM_INSTRUCTION
+
+local function sanitizeSecret(str)
+    if not str then return "" end
+    local s = tostring(str)
+    if CurrentApiKey and #CurrentApiKey > 0 then
+        s = s:gsub(CurrentApiKey, "REDACTED_KEY")
+    end
+    return s
+end
 
 local function ensureWorkspaceFolder()
     if isfolder and makefolder then
@@ -170,34 +178,47 @@ local function sanitizeForJSON(val, depth, visited)
         if visited[val] then return "[Circular]" end
         visited[val] = true
         local clean = {}
-        for k, v in pairs(val) do
-            clean[tostring(k)] = sanitizeForJSON(v, (depth or 0) + 1, visited)
-        end
+        local isArray = (#val > 0)
+        local okIter, iterErr = pcall(function()
+            if isArray then
+                for i = 1, #val do
+                    clean[i] = sanitizeForJSON(val[i], (depth or 0) + 1, visited)
+                end
+            else
+                for k, v in pairs(val) do
+                    clean[tostring(k)] = sanitizeForJSON(v, (depth or 0) + 1, visited)
+                end
+            end
+        end)
+        visited[val] = nil
+        if not okIter then return "[Protected Table: " .. tostring(iterErr) .. "]" end
         return clean
     elseif t == "Instance" then
-        local ok, fullName = pcall(function() return val:GetFullName() end)
+        local ok, fullName = pcall(val.GetFullName, val)
         return string.format("<%s> %s", val.ClassName, ok and fullName or val.Name)
     elseif t == "Vector3" or t == "CFrame" or t == "Color3" or t == "UDim2" or t == "UDim" or t == "Ray" or t == "BrickColor" then
         return tostring(val)
     elseif t == "function" or t == "thread" or t == "userdata" or t == "RBXScriptConnection" then
         return string.format("[%s]", t)
     else
-        return val
+        return tostring(val)
     end
 end
 
 local function extractLuaCode(text)
     if not text or typeof(text) ~= "string" then return nil end
     local best = nil
-    for codeBlock in text:gmatch("```lua%s*\n?(.-)%s*```") do
+    for codeBlock in text:gmatch("```[Ll][Uu][Aa][Uu]?%s*\n?(.-)%s*```") do
         if not best or #codeBlock > #best then
             best = codeBlock
         end
     end
     if not best then
-        for codeBlock in text:gmatch("```%s*\n?(.-)%s*```") do
-            if not best or #codeBlock > #best then
-                best = codeBlock
+        for codeBlock in text:gmatch("```[%w_-]*%s*\n?(.-)%s*```") do
+            -- 若捕獲到首行的語言標記 (例如 ```luau)，將首行語言標籤剔除
+            local cleaned = codeBlock:gsub("^[Ll][Uu][Aa][Uu]?%s*\n", "")
+            if not best or #cleaned > #best then
+                best = cleaned
             end
         end
     end
@@ -400,6 +421,8 @@ end
 local function resolveWsConnect()
     if WebSocket and typeof(WebSocket.connect) == "function" then return WebSocket.connect end
     if WebSocket and typeof(WebSocket.Connect) == "function" then return WebSocket.Connect end
+    if websocket and typeof(websocket.connect) == "function" then return websocket.connect end
+    if websocket and typeof(websocket.Connect) == "function" then return websocket.Connect end
     if syn and syn.websocket and typeof(syn.websocket.connect) == "function" then return syn.websocket.connect end
     if krnl and krnl.websocket and typeof(krnl.websocket.connect) == "function" then return krnl.websocket.connect end
     return nil
@@ -418,6 +441,10 @@ local function universalHttpRequest(url, method, headers, body)
         return false, nil, "當前 Executor 未提供任何 sUNC 網路請求函數 (request / http_request)"
     end
 
+    if not url or url == "" then
+        return false, nil, "HTTP 請求 URL 為空"
+    end
+
     local payload = {
         Url = url,
         url = url,
@@ -426,24 +453,53 @@ local function universalHttpRequest(url, method, headers, body)
         Headers = headers or {},
         headers = headers or {},
         Body = body or "",
-        body = body or ""
+        body = body or "",
+        Timeout = 60,
+        timeout = 60
     }
 
     local ok, res = pcall(rawHttpRequest, payload)
+
+    -- 某些 Executor 的 request() 不接受 table，嘗試以原生 syn.request 格式重試
+    if not ok and typeof(res) == "string" and (res:find("Argument") or res:find("missing") or res:find("nil") or res:find("invalid argument")) then
+        logWarn("HTTP", "嘗試替代請求格式 (標準 sUNC table 調用失敗)...")
+        -- 嘗試 syn.request 精簡格式 (僅保留標準大寫鍵名)
+        local synPayload = {
+            Url = url,
+            Method = method or "GET",
+            Headers = headers or {},
+            Body = body or ""
+        }
+        ok, res = pcall(rawHttpRequest, synPayload)
+    end
+
     if not ok then
-        return false, nil, tostring(res or "Executor 網路調用崩潰")
+        local errDetail = sanitizeSecret(tostring(res or "Executor 網路調用崩潰"))
+        logError("HTTP", "sUNC pcall 異常: " .. errDetail)
+        return false, nil, errDetail
+    end
+
+    -- 部分 Executor 直接回傳 body 字串而非 table
+    if typeof(res) == "string" then
+        return true, {
+            StatusCode = 200,
+            Body = res,
+            Headers = {}
+        }, nil
     end
 
     if typeof(res) ~= "table" then
-        return false, nil, "Executor 請求回傳格式異常: " .. tostring(res)
+        return false, nil, sanitizeSecret("Executor 請求回傳格式異常 (type=" .. typeof(res) .. "): " .. tostring(res):sub(1, 100))
     end
 
     local statusCode = res.StatusCode or res.statusCode or res.Status or res.status_code or res.status or 0
     local resBody = res.Body or res.body or ""
     local resHeaders = res.Headers or res.headers or {}
 
+    local numStatus = tonumber(tostring(statusCode):match("%d+")) or 0
+
     return true, {
-        StatusCode = tonumber(statusCode) or 0,
+        StatusCode = numStatus,
         Body = tostring(resBody),
         Headers = resHeaders
     }, nil
@@ -458,12 +514,41 @@ end
 
 logInfo("UNC", string.format("sUNC 檢測: HTTP 函數 = %s, WebSocket 函數 = %s", rawHttpRequest and "可用" or "缺失", wsConnect and "可用" or "缺失"))
 
+-- ==================== [ 4.5 DataModel 實例路徑解析器 ] ====================
+local function resolveInstanceByPath(pathStr)
+    if not pathStr or typeof(pathStr) ~= "string" then return nil end
+    local clean = pathStr:gsub("^game%.", ""):gsub("^workspace%.", "Workspace.")
+    local parts = {}
+    for part in clean:gmatch("[^%.]+") do
+        table.insert(parts, part)
+    end
+    if #parts == 0 then return nil end
+
+    local current = game
+    for _, name in ipairs(parts) do
+        local ok, nextInst = pcall(function()
+            if current == game then
+                local s = game:FindService(name)
+                if s then return s end
+            end
+            return current:FindFirstChild(name)
+        end)
+        if ok and nextInst then
+            current = nextInst
+        else
+            return nil
+        end
+    end
+    return current
+end
+
 -- ==================== [ 5. AgentEnv 核心模組 ] ====================
 local AgentEnv = {
     Logs = {},
     RemoteLogs = {},
     BlockedRemotes = {},
     RemoteSpyActive = false,
+    ActiveFilter = nil,
     NoclipActive = false,
 }
 
@@ -474,16 +559,37 @@ end
 function AgentEnv.searchInstances(queryName, className, root)
     root = root or workspace
     local matches = {}
-    for _, inst in ipairs(root:GetDescendants()) do
-        local matchName = (not queryName) or string.find(inst.Name:lower(), queryName:lower(), 1, true)
-        local matchClass = (not className) or inst:IsA(className)
+    local targets = {}
+    local okDesc, desc = pcall(function() return root:GetDescendants() end)
+    if okDesc and desc then
+        targets = desc
+    else
+        pcall(function()
+            for _, child in ipairs(root:GetChildren()) do
+                pcall(function()
+                    for _, d in ipairs(child:GetDescendants()) do
+                        table.insert(targets, d)
+                    end
+                end)
+            end
+        end)
+    end
+
+    local qLower = (queryName and queryName ~= "") and queryName:lower() or nil
+    local cName = (className and className ~= "") and className or nil
+
+    for _, inst in ipairs(targets) do
+        local matchName = (not qLower) or string.find(inst.Name:lower(), qLower, 1, true)
+        local matchClass = (not cName) or (pcall(function() return inst:IsA(cName) end) and inst:IsA(cName))
         if matchName and matchClass then
-            table.insert(matches, inst:GetFullName())
+            local okFull, fullPath = pcall(inst.GetFullName, inst)
+            table.insert(matches, okFull and fullPath or inst.Name)
             if #matches >= 40 then break end
         end
     end
     return matches
 end
+AgentEnv.findInstances = AgentEnv.searchInstances
 
 function AgentEnv.teleport(target)
     local char = LocalPlayer.Character
@@ -519,15 +625,36 @@ function AgentEnv.teleport(target)
             return false, "傳送目標 Instance 必須為 BasePart 或 Model (PVInstance)"
         end
     elseif typeof(target) == "string" then
-        for _, p in ipairs(Players:GetPlayers()) do
-            if string.find(p.Name:lower(), target:lower(), 1, true) or (p.DisplayName and string.find(p.DisplayName:lower(), target:lower(), 1, true)) then
-                if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-                    targetCFrame = p.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
-                    break
+        local x, y, z = target:match("^%s*([-%d%.]+)%s*,%s*([-%d%.]+)%s*,%s*([-%d%.]+)%s*$")
+        if x and y and z then
+            local vx, vy, vz = tonumber(x), tonumber(y), tonumber(z)
+            if vx and vy and vz then
+                targetCFrame = CFrame.new(vx, vy, vz)
+            end
+        end
+
+        if not targetCFrame then
+            local resolved = resolveInstanceByPath(target) or workspace:FindFirstChild(target, true)
+            if resolved and typeof(resolved) == "Instance" then
+                if resolved:IsA("BasePart") then
+                    targetCFrame = resolved.CFrame + Vector3.new(0, 3, 0)
+                elseif resolved:IsA("Model") or resolved:IsA("PVInstance") then
+                    targetCFrame = resolved:GetPivot() + Vector3.new(0, 3, 0)
                 end
             end
         end
-        if not targetCFrame then return false, "未找到指定玩家" end
+
+        if not targetCFrame then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and (string.find(p.Name:lower(), target:lower(), 1, true) or (p.DisplayName and string.find(p.DisplayName:lower(), target:lower(), 1, true))) then
+                    if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                        targetCFrame = p.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+                        break
+                    end
+                end
+            end
+        end
+        if not targetCFrame then return false, "未找到指定座標、部件或玩家: " .. tostring(target) end
     end
 
     if not targetCFrame then return false, "無法解析傳送目標" end
@@ -564,17 +691,40 @@ function AgentEnv.walkTo(target, options)
             return false, "尋路目標 Instance 必須為 PVInstance (BasePart 或 Model)"
         end
     elseif typeof(target) == "string" then
-        for _, p in ipairs(Players:GetPlayers()) do
-            if string.find(p.Name:lower(), target:lower(), 1, true) then
-                if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-                    destPos = p.Character.HumanoidRootPart.Position
-                    break
+        local x, y, z = target:match("^%s*([-%d%.]+)%s*,%s*([-%d%.]+)%s*,%s*([-%d%.]+)%s*$")
+        if x and y and z then
+            local vx, vy, vz = tonumber(x), tonumber(y), tonumber(z)
+            if vx and vy and vz then
+                destPos = Vector3.new(vx, vy, vz)
+            end
+        end
+
+        if not destPos then
+            local resolved = resolveInstanceByPath(target) or workspace:FindFirstChild(target, true)
+            if resolved and typeof(resolved) == "Instance" then
+                if resolved:IsA("BasePart") then
+                    destPos = resolved.Position
+                elseif resolved:IsA("Model") and resolved.PrimaryPart then
+                    destPos = resolved.PrimaryPart.Position
+                elseif resolved:IsA("PVInstance") then
+                    destPos = resolved:GetPivot().Position
+                end
+            end
+        end
+
+        if not destPos then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and (string.find(p.Name:lower(), target:lower(), 1, true) or (p.DisplayName and string.find(p.DisplayName:lower(), target:lower(), 1, true))) then
+                    if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                        destPos = p.Character.HumanoidRootPart.Position
+                        break
+                    end
                 end
             end
         end
     end
 
-    if not destPos then return false, "無法解析尋路目標" end
+    if not destPos then return false, "無法解析尋路目標: " .. tostring(target) end
 
     options = options or {}
     local path = PathfindingService:CreatePath({
@@ -652,6 +802,7 @@ local hasHookFunction = (typeof(hookfunction) == "function")
 local hasNewcclosure = (typeof(newcclosure) == "function")
 local hasCheckcaller = (typeof(checkcaller) == "function")
 local hasGetNamecallMethod = (typeof(getnamecallmethod) == "function")
+local hasSetNamecallMethod = (typeof(setnamecallmethod) == "function")
 
 local function safeNewcclosure(fn)
     if hasNewcclosure then
@@ -684,9 +835,15 @@ local function internalRecordRemote(inst, method, args)
         return true
     end
 
+    if AgentEnv.ActiveFilter and AgentEnv.ActiveFilter ~= "" then
+        if not string.find(rName:lower(), AgentEnv.ActiveFilter:lower(), 1, true) then
+            return false
+        end
+    end
+
     if AgentEnv.RemoteSpyActive then
         local cleanArgs = sanitizeForJSON(args)
-        local okFull, fullPath = pcall(function() return inst:GetFullName() end)
+        local okFull, fullPath = pcall(inst.GetFullName, inst)
         table.insert(AgentEnv.RemoteLogs, {
             time = os.date("%H:%M:%S"),
             name = rName,
@@ -703,23 +860,25 @@ local function internalRecordRemote(inst, method, args)
 end
 
 function AgentEnv.startRemoteSpy(options)
+    AgentEnv.ActiveFilter = (options and options.filter and options.filter ~= "") and options.filter or nil
     if AgentEnv.RemoteSpyActive then return true, "Remote Spy 運作中" end
 
-    -- 互斥原則：若支援 hookmetamethod，優先 hook __namecall，絕不重複 hook hookfunction 避免雙倍截獲
     if hasHookMetamethod and hasGetNamecallMethod then
         if not originalNamecall then
             local hookFn = safeNewcclosure(function(self, ...)
-                if not AgentEnv.RemoteSpyActive then
+                local method = hasGetNamecallMethod and getnamecallmethod()
+                if not AgentEnv.RemoteSpyActive and not next(AgentEnv.BlockedRemotes) then
+                    if hasSetNamecallMethod and method then setnamecallmethod(method) end
                     return originalNamecall(self, ...)
                 end
                 if not safeCheckcaller() then
-                    local method = getnamecallmethod()
                     if method == "FireServer" or method == "InvokeServer" then
                         if internalRecordRemote(self, method, {...}) then
                             return nil
                         end
                     end
                 end
+                if hasSetNamecallMethod and method then setnamecallmethod(method) end
                 return originalNamecall(self, ...)
             end)
             local okHook, resHook = pcall(hookmetamethod, game, "__namecall", hookFn)
@@ -730,12 +889,14 @@ function AgentEnv.startRemoteSpy(options)
                 logWarn("Hook", "hookmetamethod 攔截失敗: " .. tostring(resHook))
             end
         end
-    elseif hasHookFunction then
-        -- 僅在缺少 hookmetamethod 時使用 hookfunction 作為備用防線
+    end
+
+    if not originalNamecall and hasHookFunction then
+        -- 僅在缺少 hookmetamethod 或 hookmetamethod 失敗時使用 hookfunction 作為備用防線
         if not originalFireServer then
             dummyRemoteEvent = Instance.new("RemoteEvent")
             local hookEventFn = safeNewcclosure(function(self, ...)
-                if not AgentEnv.RemoteSpyActive then
+                if not AgentEnv.RemoteSpyActive and not next(AgentEnv.BlockedRemotes) then
                     return originalFireServer(self, ...)
                 end
                 if not safeCheckcaller() and internalRecordRemote(self, "FireServer", {...}) then
@@ -753,7 +914,7 @@ function AgentEnv.startRemoteSpy(options)
         if not originalInvokeServer then
             dummyRemoteFunction = Instance.new("RemoteFunction")
             local hookFuncFn = safeNewcclosure(function(self, ...)
-                if not AgentEnv.RemoteSpyActive then
+                if not AgentEnv.RemoteSpyActive and not next(AgentEnv.BlockedRemotes) then
                     return originalInvokeServer(self, ...)
                 end
                 if not safeCheckcaller() and internalRecordRemote(self, "InvokeServer", {...}) then
@@ -767,9 +928,11 @@ function AgentEnv.startRemoteSpy(options)
                 logInfo("Hook", "已啟用 hookfunction(InvokeServer) 備用攔截軌道")
             end
         end
-    else
-        logWarn("Hook", "當前 Executor 不支援任何 Hook 原語，Remote Spy 無法截獲網絡通訊")
-        return false, "Executor 缺少 Hook 原語"
+    end
+
+    if not originalNamecall and not originalFireServer then
+        logWarn("Hook", "當前 Executor 不支援任何 Hook 原語或 Hook 安裝失敗，Remote Spy 無法截獲網絡通訊")
+        return false, "Executor 缺少 Hook 原語或 Hook 安裝失敗"
     end
 
     AgentEnv.RemoteSpyActive = true
@@ -778,16 +941,18 @@ end
 
 function AgentEnv.stopRemoteSpy()
     AgentEnv.RemoteSpyActive = false
+    AgentEnv.ActiveFilter = nil
     return true, "Remote Spy 已停止監聽 (零開銷旁路已啟用)"
 end
 
 function AgentEnv.inspectInstance(inst)
     if typeof(inst) ~= "Instance" then return nil, "目標非 Instance 物件" end
 
-    local okFull, fullName = pcall(function() return inst:GetFullName() end)
+    local okFull, fullName = pcall(inst.GetFullName, inst)
     local okParent, parentName = pcall(function()
         if not inst.Parent then return "nil" end
-        return inst.Parent:GetFullName()
+        local okP, pFull = pcall(inst.Parent.GetFullName, inst.Parent)
+        return okP and pFull or inst.Parent.Name
     end)
 
     local inspection = {
@@ -820,9 +985,9 @@ end
 function AgentEnv.setPlayerProperty(prop, value)
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum and pcall(function() return hum[prop] end) then
-        hum[prop] = value
-        return true
+    if hum then
+        local okSet = pcall(function() hum[prop] = value end)
+        return okSet
     end
     return false
 end
@@ -850,7 +1015,7 @@ function AgentEnv.setNoclip(state)
         end
         if LocalPlayer.Character then
             for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-                if part:IsA("BasePart") and (part.Name == "HumanoidRootPart" or part.Name == "UpperTorso" or part.Name == "LowerTorso" or part.Name == "Torso") then
+                if part:IsA("BasePart") and (part.Name == "UpperTorso" or part.Name == "LowerTorso" or part.Name == "Torso") then
                     part.CanCollide = true
                 end
             end
@@ -877,10 +1042,135 @@ getgenv()._BloxAgentCleanup = function()
     if currentMainThread then pcall(task.cancel, currentMainThread) end
 end
 
+-- ==================== [ 5.1 Agent 註冊工具庫 (Registered Tool Declarations) ] ====================
+local AGENT_TOOL_DECLARATIONS = {
+    {
+        name = "execute_luau",
+        description = "Executes arbitrary Luau script in the Roblox executor sandbox with full game and UNC access. Standard output from print() and runtime errors are captured in the observation.",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                code = { type = "STRING", description = "The Luau code to run." }
+            },
+            required = { "code" }
+        }
+    },
+    {
+        name = "find_instances",
+        description = "Searches the Roblox DataModel tree for instances matching queryName and/or className (e.g. RemoteEvents, Parts, Models, Player characters).",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                queryName = { type = "STRING", description = "Name substring to filter instances." },
+                className = { type = "STRING", description = "ClassName to filter (e.g. 'RemoteEvent', 'Part', 'Model')." },
+                root = { type = "STRING", description = "Root container name: 'workspace', 'ReplicatedStorage', 'Players', etc. Defaults to 'workspace'." }
+            }
+        }
+    },
+    {
+        name = "inspect_instance",
+        description = "Deeply inspects an instance at the specified path, returning its ClassName, Parent, Children count, Attributes, Tags, and core Properties (Position, CFrame, WalkSpeed, etc.).",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                path = { type = "STRING", description = "Full path or name of the instance (e.g. 'game.ReplicatedStorage.Remotes.BuyItem')." }
+            },
+            required = { "path" }
+        }
+    },
+    {
+        name = "teleport",
+        description = "Teleports the local player character to a specified target (Player name, Instance name, or coordinates 'X, Y, Z').",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                target = { type = "STRING", description = "Target player name, part name, or coordinates." }
+            },
+            required = { "target" }
+        }
+    },
+    {
+        name = "walk_to",
+        description = "Uses PathfindingService to calculate waypoints and walk the local player character to the target.",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                target = { type = "STRING", description = "Target player name, part name, or coordinates." }
+            },
+            required = { "target" }
+        }
+    },
+    {
+        name = "start_remote_spy",
+        description = "Activates Remote Spy to intercept and log outbound FireServer/InvokeServer network traffic.",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                filter = { type = "STRING", description = "Optional name substring to filter remotes." }
+            }
+        }
+    },
+    {
+        name = "get_remote_logs",
+        description = "Retrieves recent network traffic logs intercepted by Remote Spy."
+    },
+    {
+        name = "set_noclip",
+        description = "Enables or disables noclip (allowing the player character to walk through solid walls and terrain).",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                enabled = { type = "BOOLEAN", description = "true to enable noclip, false to disable." }
+            },
+            required = { "enabled" }
+        }
+    },
+    {
+        name = "read_file",
+        description = "Reads content of a file from the executor BloxAgent workspace folder.",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                filename = { type = "STRING", description = "Name of file to read." }
+            },
+            required = { "filename" }
+        }
+    },
+    {
+        name = "write_file",
+        description = "Writes content to a file in the executor BloxAgent workspace folder.",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                filename = { type = "STRING", description = "Name of file to write." },
+                content = { type = "STRING", description = "Content to save." }
+            },
+            required = { "filename", "content" }
+        }
+    },
+    {
+        name = "finish",
+        description = "Signals that the goal or task is fully completed and provides a final summary.",
+        parameters = {
+            type = "OBJECT",
+            properties = {
+                summary = { type = "STRING", description = "Summary of results and conclusions." }
+            },
+            required = { "summary" }
+        }
+    }
+}
 
 -- ==================== [ 6. 通信層 (Gemini WebSocket & sUNC HTTP) ] ====================
-local activeWebSocket = nil
-local lastWatchdogHeartbeat = os.clock()
+local function wsSend(sock, payload)
+    if not sock then return false end
+    if sock.Send then
+        return pcall(function() sock:Send(payload) end)
+    elseif sock.send then
+        return pcall(function() sock:send(payload) end)
+    end
+    return false
+end
 
 local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession, onChunk)
     local cleanModel = (modelName:gsub("^models/", ""))
@@ -893,8 +1183,9 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
 
     local okConn, wsOrErr = pcall(function() return wsConnect(wsUrl) end)
     if not okConn or not wsOrErr then
-        logWarn("WS", "WebSocket 連線建立失敗: " .. tostring(wsOrErr or "未知錯誤"))
-        return false, "WebSocket 連線建立失敗: " .. tostring(wsOrErr or "未知錯誤")
+        local safeErr = tostring(wsOrErr or "未知錯誤"):gsub(apiKey, "REDACTED_KEY")
+        logWarn("WS", "WebSocket 連線建立失敗: " .. safeErr)
+        return false, "WebSocket 連線建立失敗: " .. safeErr
     end
     local ws = wsOrErr
     activeWebSocket = ws
@@ -905,7 +1196,7 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
             model = "models/" .. cleanModel,
             generationConfig = {
                 responseModalities = { "TEXT" },
-                temperature = 0.1
+                temperature = tonumber(Config.TEMPERATURE) or 0.1
             },
             systemInstruction = {
                 parts = { { text = CurrentSystemPrompt } }
@@ -938,13 +1229,17 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
     local streamError = nil
     local receivedContent = false
 
+    local lastActivityTime = os.clock()
+
     local function handleIncomingMessage(rawMsg)
         local parseOk, data = pcall(HttpService.JSONDecode, HttpService, rawMsg)
         if not parseOk or typeof(data) ~= "table" then return end
 
+        lastActivityTime = os.clock()
+
         if data.setupComplete then
             logInfo("WS", "Bidi Setup 完成，發送用戶指令...")
-            pcall(function() ws:Send(HttpService:JSONEncode(clientTurnPayload)) end)
+            wsSend(ws, HttpService:JSONEncode(clientTurnPayload))
             return
         end
 
@@ -997,18 +1292,16 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
     end
 
     if not bindWsEvent("OnMessage", handleIncomingMessage) and not bindWsEvent("Message", handleIncomingMessage) then
-        ws.OnMessage = handleIncomingMessage
-        if ws.onmessage ~= nil then ws.onmessage = handleIncomingMessage end
+        pcall(function() ws.OnMessage = handleIncomingMessage end)
+        pcall(function() if ws.onmessage ~= nil then ws.onmessage = handleIncomingMessage end end)
     end
 
     if not bindWsEvent("OnClose", handleClose) and not bindWsEvent("Close", handleClose) then
-        ws.OnClose = handleClose
-        if ws.onclose ~= nil then ws.onclose = handleClose end
+        pcall(function() ws.OnClose = handleClose end)
+        pcall(function() if ws.onclose ~= nil then ws.onclose = handleClose end end)
     end
 
-    local sendOk, sendErr = pcall(function()
-        ws:Send(HttpService:JSONEncode(setupPayload))
-    end)
+    local sendOk, sendErr = wsSend(ws, HttpService:JSONEncode(setupPayload))
 
     if not sendOk then
         logError("WS", "握手請求發送失敗: " .. tostring(sendErr))
@@ -1021,9 +1314,8 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
     end
 
     local timeoutSec = tonumber(Config.WS_TIMEOUT) or 25
-    local waitStart = os.clock()
     while not isFinished do
-        if os.clock() - waitStart > timeoutSec then
+        if os.clock() - lastActivityTime > timeoutSec then
             streamError = string.format("WebSocket 響應逾時 (%d 秒無數據，可在設定中調整)", timeoutSec)
             logWarn("WS", streamError)
             break
@@ -1058,20 +1350,39 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
             parts = item.parts
         })
     end
-    table.insert(contents, {
-        role = "user",
-        parts = { { text = userPrompt } }
-    })
+    if userPrompt and #userPrompt > 0 then
+        table.insert(contents, {
+            role = "user",
+            parts = { { text = userPrompt } }
+        })
+    end
+
+    local genConfig = {
+        temperature = tonumber(Config.TEMPERATURE) or 0.1,
+        maxOutputTokens = tonumber(Config.MAX_OUTPUT_TOKENS) or 8192
+    }
+    if thinkLevel and thinkLevel ~= "Off" then
+        local budget = 0
+        if thinkLevel == "Low" then budget = 1024
+        elseif thinkLevel == "Medium" then budget = 4096
+        elseif thinkLevel == "High" then budget = 8192
+        end
+        if budget > 0 then
+            genConfig.thinkingConfig = { thinkingBudget = budget }
+        end
+    elseif thinkLevel == "Off" then
+        genConfig.thinkingConfig = { thinkingBudget = 0 }
+    end
 
     local payload = {
         systemInstruction = { parts = { { text = CurrentSystemPrompt } } },
         contents = contents,
-        generationConfig = { temperature = 0.1, maxOutputTokens = 8192 }
+        generationConfig = genConfig
     }
 
     local encodedBody = safeJSONEncode(payload)
     if not encodedBody then
-        return false, "請求 Payload JSON 編碼失敗", "", ""
+        return false, "請求 Payload JSON 編碼失敗", "", {}, {}
     end
 
     local headers = {
@@ -1098,9 +1409,9 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
     end
 
     if not reqOk or not response then
-        local errMsg = "sUNC 網路請求異常: " .. tostring(reqErr or "未知錯誤")
+        local errMsg = sanitizeSecret("sUNC 網路請求異常: " .. tostring(reqErr or "未知錯誤"))
         logError("HTTP", errMsg)
-        return false, errMsg, "", ""
+        return false, errMsg, "", {}, {}
     end
 
     local statusCode = response.StatusCode
@@ -1128,129 +1439,304 @@ local function callGeminiHTTP(apiKey, modelName, thinkLevel, userPrompt, targetS
             friendlyHint = "\n💡 提示：API Key 無效或權限不足，請檢查金鑰。"
         end
 
-        local finalErrMsg = string.format("HTTP 請求失敗 (狀態碼 %s)%s%s", tostring(statusCode or "中斷"), detailedMsg, friendlyHint)
+        local finalErrMsg = sanitizeSecret(string.format("HTTP 請求失敗 (狀態碼 %s)%s%s", tostring(statusCode or "中斷"), detailedMsg, friendlyHint))
         logError("HTTP", finalErrMsg)
-        return false, finalErrMsg, "", ""
+        return false, finalErrMsg, "", {}, {}
     end
 
     local data = safeJSONDecode(body)
     if not data or typeof(data) ~= "table" then
-        logError("HTTP", "JSON 解析失敗: " .. tostring(body):sub(1, 100))
-        return false, "伺服器返回非有效 JSON 格式", "", ""
+        local parseErrMsg = sanitizeSecret("JSON 解析失敗: " .. tostring(body):sub(1, 100))
+        logError("HTTP", parseErrMsg)
+        return false, "伺服器返回非有效 JSON 格式", "", {}, {}
     end
 
     local replyText = ""
     local thoughtText = ""
+    local functionCalls = {}
+    local rawParts = {}
 
     if data.candidates and data.candidates[1] and data.candidates[1].content and data.candidates[1].content.parts then
+        rawParts = data.candidates[1].content.parts
         for _, part in ipairs(data.candidates[1].content.parts) do
             if part.thought == true then
                 thoughtText = thoughtText .. (part.text or "")
             elseif part.text then
                 replyText = replyText .. (part.text or "")
             end
+            if part.functionCall then
+                table.insert(functionCalls, part.functionCall)
+            end
         end
     end
 
-    if replyText == "" and thoughtText == "" then
-        logWarn("HTTP", "API 未回傳文本候選內容")
-        return false, "API 未回傳有效內容 (可能觸發安全過濾或 Token 超限)", "", ""
+    if replyText == "" and thoughtText == "" and #functionCalls == 0 then
+        logWarn("HTTP", "API 未回傳文本或工具調用內容")
+        return false, "API 未回傳有效內容 (可能觸發安全過濾或 Token 超限)", "", {}, {}
     end
 
-    logInfo("HTTP", string.format("HTTP 通信成功 (回覆長度: %d, 思考長度: %d)", #replyText, #thoughtText))
-    return true, replyText, thoughtText
+    logInfo("HTTP", string.format("HTTP 通信成功 (回覆長度: %d, 思考長度: %d, 工具調用: %d)", #replyText, #thoughtText, #functionCalls))
+    return true, replyText, thoughtText, functionCalls, rawParts
 end
 
--- ==================== [ 7. 沙盒執行引擎與靜態死循環防禦 ] ====================
+-- ==================== [ 6.5 上下文治理與自動壓縮引擎 (Auto-Compaction) ] ====================
+local function compactSessionHistory(targetSession, apiKey, modelName)
+    if not targetSession or not targetSession.history or #targetSession.history < 4 then
+        return false
+    end
+
+    logInfo("Compact", "觸發上下文自動壓縮 (Auto-Compaction)...")
+    if AgentLoopStatusBadge then
+        AgentLoopStatusBadge.Text = "🔄 上下文治理壓縮中..."
+        AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(255, 200, 100)
+    end
+
+    -- 提取需要被壓縮的舊歷史文本
+    local transcriptLines = {}
+    for idx, item in ipairs(targetSession.history) do
+        local r = item.role or "unknown"
+        for _, p in ipairs(item.parts or {}) do
+            if p.text then
+                table.insert(transcriptLines, string.format("[%s]: %s", r, p.text:sub(1, 600)))
+            end
+        end
+    end
+    local transcript = table.concat(transcriptLines, "\n\n")
+
+    local compactPrompt = [===[請將以下 Agent 與使用者的執行歷史進行語意壓縮（Compaction），提煉出結構化的「已驗證環境狀態事實與已完成進度摘要」：
+1. 已確認的遊戲實例全路徑、物件名稱與關鍵屬性。
+2. 已驗證有效的 Remote 協議、引數結構或功能狀態。
+3. 當前已完成的工作步驟，以及待解決的目標。
+4. 去除冗長的除錯代碼、無效的 Traceback 與過時終端日誌。
+請直接以簡明、條列式的繁體中文 Markdown 輸出摘要事實，不需冗餘問候。]===]
+
+    local cleanModel = (modelName:gsub("^models/", ""))
+    local endpoint = string.format("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cleanModel, apiKey)
+    local payload = {
+        contents = {
+            {
+                role = "user",
+                parts = {
+                    { text = compactPrompt .. "\n\n=== 執行歷史紀錄 ===\n" .. transcript }
+                }
+            }
+        },
+        generationConfig = {
+            temperature = 0.1,
+            maxOutputTokens = 2048
+        }
+    }
+    local encodedBody = safeJSONEncode(payload)
+    if not encodedBody then return false end
+
+    local headers = {
+        ["Content-Type"] = "application/json",
+        ["x-goog-api-key"] = apiKey
+    }
+
+    local reqOk, response = universalHttpRequest(endpoint, "POST", headers, encodedBody)
+    if reqOk and response and response.StatusCode == 200 then
+        local data = safeJSONDecode(response.Body)
+        local summaryText = ""
+        if data and data.candidates and data.candidates[1] and data.candidates[1].content and data.candidates[1].content.parts then
+            for _, pt in ipairs(data.candidates[1].content.parts) do
+                if pt.text then summaryText = summaryText .. pt.text end
+            end
+        end
+
+        if #summaryText > 0 then
+            -- 保留最近 1 輪對話
+            local recentHistory = {}
+            if #targetSession.history >= 2 then
+                table.insert(recentHistory, targetSession.history[#targetSession.history - 1])
+                table.insert(recentHistory, targetSession.history[#targetSession.history])
+            end
+
+            targetSession.history = {
+                {
+                    role = "user",
+                    parts = { { text = "[系統記憶壓縮 / Context Compaction State]\n以下為先前執行步驟所提煉之環境已知狀態與進度摘要：\n" .. summaryText } }
+                },
+                {
+                    role = "model",
+                    parts = { { text = "已同步當前環境狀態事實摘要，已重置對話歷史以防注意力衰退，準備繼續執行下一步。" } }
+                }
+            }
+            for _, rh in ipairs(recentHistory) do
+                table.insert(targetSession.history, rh)
+            end
+
+            table.insert(targetSession.messages, {
+                role = "assistant",
+                text = "🔄 **[上下文治理]** 歷史對話已自動完成語意壓縮（Auto-Compacted），提煉關鍵環境狀態事實並重置冗餘上下文，有效杜絕注意力衰退 (Context Rot)。",
+                time = os.date("%H:%M:%S")
+            })
+            if renderActiveSessionChat then renderActiveSessionChat() end
+            if saveSessionsToWorkspace then saveSessionsToWorkspace() end
+            logInfo("Compact", "上下文壓縮完成！")
+            return true
+        end
+    end
+    return false
+end
+
+-- ==================== [ 7. 高特權 CodeAct 運行時與雙軌看門狗 (Execution Harness) ] ====================
 local isBusy = false
+local currentExecutionId = 0
 local currentMainThread = nil
 local currentCodeThread = nil
 
+-- ACI (Agent-Computer Interface) 輸出規範常數
+local ACI_MAX_LOG_LINES = 100
+local ACI_MAX_LOG_CHARS = 4000
+
 local function checkDangerousLoops(code)
     if not code or typeof(code) ~= "string" then return true end
-    for loopBlock in code:gmatch("while%s+true%s+do(.-)end") do
-        if not loopBlock:find("wait", 1, true) and not loopBlock:find("Heartbeat", 1, true) and not loopBlock:find("Stepped", 1, true) and not loopBlock:find("heartbeat", 1, true) then
-            return false, "檢測到未包含讓步 (Yield/task.wait) 的 while true 死循環，為防止 Roblox 凍結已阻止執行。"
-        end
-    end
-    for loopBlock in code:gmatch("repeat(.-)until%s+false") do
-        if not loopBlock:find("wait", 1, true) and not loopBlock:find("Heartbeat", 1, true) and not loopBlock:find("Stepped", 1, true) and not loopBlock:find("heartbeat", 1, true) then
-            return false, "檢測到未包含讓步 (Yield/task.wait) 的 repeat until false 死循環，為防止 Roblox 凍結已阻止執行。"
+    local hasWhileTrue = code:find("while%s+true%s+do") or code:find("while%s+1%s+do")
+    local hasRepeatFalse = code:find("repeat.-until%s+false")
+    if (hasWhileTrue or hasRepeatFalse) then
+        local hasYield = code:find("wait", 1, true) or code:find("Heartbeat", 1, true) or code:find("Stepped", 1, true) or code:find("heartbeat", 1, true) or code:find("RenderStepped", 1, true)
+        if not hasYield then
+            return false, "靜態安全攔截：檢測到無讓步死循環 (while/repeat 區塊內未發現 task.wait 或 RunService 讓步)，為避免遊戲凍結已阻止執行。"
         end
     end
     return true, nil
 end
 
-local function executeInSandbox(luaCode)
+local function executeCodeAct(luaCode)
     local capturedLogs = {}
+    local totalChars = 0
+    local logTruncated = false
+
+    local function addLog(str)
+        if #capturedLogs >= ACI_MAX_LOG_LINES or totalChars >= ACI_MAX_LOG_CHARS then
+            if not logTruncated then
+                logTruncated = true
+                table.insert(capturedLogs, string.format("[⚠️ 終端輸出已達 ACI 上限截斷 (僅展示前 %d 行)。若需檢視更多請於代碼中縮小查詢範圍或使用分頁/切片]", #capturedLogs))
+            end
+            return
+        end
+        totalChars = totalChars + #str
+        table.insert(capturedLogs, str)
+        logInfo("AgentPrint", str)
+    end
+
     local safeLoop, loopErr = checkDangerousLoops(luaCode)
     if not safeLoop then
         return false, loopErr, capturedLogs
     end
 
     local func, compileErr
-    local okLoad, loadRes = pcall(loadstring, luaCode)
+    local prependedCode = "local print, warn, AgentEnv = ...; " .. luaCode
+    local okLoad, loadRes, loadErr = pcall(loadstring, prependedCode)
+    if not okLoad or type(loadRes) ~= "function" then
+        -- 容錯備援：若注入語法在特定環境失敗，回退至原生 loadstring
+        okLoad, loadRes, loadErr = pcall(loadstring, luaCode)
+    end
     if okLoad and type(loadRes) == "function" then
         func = loadRes
     else
-        compileErr = tostring(loadRes or "語法解析失敗")
+        compileErr = tostring(loadErr or loadRes or "語法解析失敗")
         return false, "代碼編譯失敗: " .. compileErr, capturedLogs
     end
 
+    -- 高特權透明環境：不設限沙盒隔離，允許無障礙調用 UNC 與真實全域環境
+    local baseEnv = (getgenv and getgenv()) or getfenv(0) or _G
+    local execEnv = {}
+
+    -- 包裝 print 與 warn 以進行 ACI 輸出捕獲與防洪截斷
+    execEnv.print = function(...)
+        local parts = {}
+        for i = 1, select("#", ...) do
+            local v = select(i, ...)
+            parts[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
+        end
+        addLog(table.concat(parts, " "))
+    end
+
+    execEnv.warn = function(...)
+        local parts = {}
+        for i = 1, select("#", ...) do
+            local v = select(i, ...)
+            parts[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
+        end
+        addLog("[Warn] " .. table.concat(parts, " "))
+    end
+
+    -- 包裝 task.wait 與 wait，在讓步時自動刷新看門狗心跳時間戳記
     local wrappedTask = table.clone(task)
     local origTaskWait = task.wait
     wrappedTask.wait = function(...)
-        AgentEnv.heartbeat()
+        lastWatchdogHeartbeat = os.clock()
         return origTaskWait(...)
     end
+    execEnv.task = wrappedTask
+    execEnv.wait = function(...)
+        lastWatchdogHeartbeat = os.clock()
+        return task.wait(...)
+    end
 
-    local customEnv = {
-        script = nil,
-        task = wrappedTask,
-        wait = function(...)
-            AgentEnv.heartbeat()
-            return task.wait(...)
-        end,
-        print = function(...)
-            local str = {}
-            for i = 1, select("#", ...) do
-                local v = select(i, ...)
-                str[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
-            end
-            local line = table.concat(str, " ")
-            table.insert(capturedLogs, line)
-            logInfo("AgentPrint", line)
-        end,
-        AgentEnv = AgentEnv,
-        LocalPlayer = LocalPlayer,
-        Players = Players,
-        game = game,
-        workspace = workspace,
-        RunService = RunService,
-        HttpService = HttpService,
-        PathfindingService = PathfindingService,
-        CollectionService = CollectionService,
-        UserInputService = UserInputService
-    }
+    execEnv.AgentEnv = AgentEnv
+    execEnv.script = nil
 
-    setmetatable(customEnv, {
+    setmetatable(execEnv, {
         __index = function(_, k)
             if k == "script" then return nil end
-            return (getgenv and getgenv()[k]) or getfenv()[k]
+            local v = baseEnv[k]
+            if v == nil and getfenv then
+                v = getfenv(0)[k]
+            end
+            return v
         end,
-        __newindex = function(t, k, v)
-            rawset(t, k, v)
+        __newindex = function(_, k, v)
+            -- 腳本中定義或賦值的全域變數直接作用於真實環境，支援逆向腳本互動
+            if baseEnv then
+                baseEnv[k] = v
+            end
         end
     })
 
-    pcall(setfenv, func, customEnv)
+    pcall(setfenv, func, execEnv)
 
     local runOk, runErr = false, ""
     local finished = false
+    local returnedValues = {}
     lastWatchdogHeartbeat = os.clock()
 
+    -- 啟動語言虛擬機級別的動態指令計數鉤子 (若執行器支援 debug.sethook)
+    local hasSetHook = false
+    if debug and type(debug.sethook) == "function" then
+        pcall(function()
+            debug.sethook(function()
+                debug.sethook()
+                error("[Watchdog Security] 執行指令突破配額 (10^7 指令)，判定為嚴密無讓步死循環強制中止")
+            end, "", 10000)
+            hasSetHook = true
+        end)
+    end
+
+    -- 暫時重定向全域 getgenv().print 與 warn，確保非同步與間接調用亦能被 ACI 捕獲
+    local origGenPrint = (getgenv and getgenv().print)
+    local origGenWarn = (getgenv and getgenv().warn)
+    if getgenv then
+        getgenv().print = execEnv.print
+        getgenv().warn = execEnv.warn
+    end
+
     currentCodeThread = task.spawn(function()
-        runOk, runErr = pcall(func)
+        runOk, runErr = xpcall(function()
+            returnedValues = { func(execEnv.print, execEnv.warn, AgentEnv) }
+        end, function(err)
+            local tb = debug.traceback(tostring(err), 2)
+            -- ACI Traceback 去噪：過濾 Harness 內部框架包裝行，精確定位模型程式碼
+            local cleanLines = {}
+            for line in tostring(tb):gmatch("[^\r\n]+") do
+                if not line:find("executeCodeAct") and not line:find("xpcall") then
+                    table.insert(cleanLines, line)
+                end
+            end
+            return table.concat(cleanLines, "\n")
+        end)
         finished = true
     end)
 
@@ -1262,15 +1748,189 @@ local function executeInSandbox(luaCode)
                 currentCodeThread = nil
             end
             runOk = false
-            runErr = string.format("代碼無響應超過 %d 秒 (看門狗強制中斷，可在設定中調整)", TIMEOUT)
+            runErr = string.format("代碼無響應超過 %d 秒 (非同步看門狗搶佔式中斷，可在設定中調整)", TIMEOUT)
             logWarn("Watchdog", runErr)
             break
         end
         task.wait(0.05)
     end
 
+    if hasSetHook and debug and debug.sethook then
+        pcall(debug.sethook)
+    end
+
+    -- 還原全域 print 與 warn
+    if getgenv then
+        getgenv().print = origGenPrint
+        getgenv().warn = origGenWarn
+    end
+
+    -- 若腳本存在 return 且無 print，將返回值作為輸出觀測捕獲
+    if runOk and #capturedLogs == 0 and #returnedValues > 0 then
+        local retStrs = {}
+        for i = 1, #returnedValues do
+            local v = returnedValues[i]
+            retStrs[i] = typeof(v) == "table" and (safeJSONEncode(sanitizeForJSON(v)) or tostring(v)) or tostring(v)
+        end
+        addLog("[Return] " .. table.concat(retStrs, ", "))
+    end
+
+    -- 終端日誌保底：若完全無輸出亦非報錯，標註執行狀態避免日誌為空
+    if runOk and #capturedLogs == 0 then
+        table.insert(capturedLogs, "(代碼執行完成，無 print 輸出與返回值)")
+    end
+
     currentCodeThread = nil
     return runOk, runErr, capturedLogs
+end
+
+-- 向下相容別名
+local executeInSandbox = executeCodeAct
+
+-- ==================== [ 7.1 Agent 工具分發器 (ReAct Tool Dispatcher) ] ====================
+local function dispatchAgentTool(toolName, args)
+    args = args or {}
+    logInfo("ToolDispatch", "調用工具: " .. tostring(toolName))
+
+    if toolName == "execute_luau" then
+        local code = args.code or ""
+        local runOk, runErr, logs = executeInSandbox(code)
+        local outStr = table.concat(logs, "\n")
+        if not runOk then
+            return {
+                status = "error",
+                error = tostring(runErr),
+                logs = logs,
+                output = string.format("代碼執行報錯: %s\n日誌:\n%s", tostring(runErr), outStr)
+            }
+        else
+            return {
+                status = "success",
+                logs = logs,
+                output = string.format("代碼執行成功。\n日誌:\n%s", (#outStr > 0 and outStr or "(無 print 輸出)"))
+            }
+        end
+
+    elseif toolName == "find_instances" then
+        local rootInst = workspace
+        if args.root and args.root ~= "" then
+            rootInst = resolveInstanceByPath(args.root) or (pcall(function() return game:GetService(args.root) end) and game:GetService(args.root)) or workspace
+        end
+        local matches = AgentEnv.findInstances(args.queryName, args.className, rootInst)
+        return {
+            status = "success",
+            matches = matches,
+            output = string.format("找到 %d 個符合條件的實例:\n%s", #matches, (#matches > 0 and table.concat(matches, "\n") or "無匹配實例"))
+        }
+
+    elseif toolName == "inspect_instance" then
+        local inst = resolveInstanceByPath(args.path)
+        if not inst then
+            return {
+                status = "error",
+                output = string.format("未在 DataModel 中找到路徑指定的實例: %s", tostring(args.path))
+            }
+        end
+        local info, err = AgentEnv.inspectInstance(inst)
+        if not info then
+            return { status = "error", output = tostring(err) }
+        end
+        return {
+            status = "success",
+            data = info,
+            output = safeJSONEncode(info) or "檢視完成"
+        }
+
+    elseif toolName == "teleport" then
+        local target = args.target
+        local ok, msg = AgentEnv.teleport(target)
+        return {
+            status = ok and "success" or "error",
+            output = tostring(msg)
+        }
+
+    elseif toolName == "walk_to" then
+        local target = args.target
+        local ok, msg = AgentEnv.walkTo(target)
+        return {
+            status = ok and "success" or "error",
+            output = tostring(msg)
+        }
+
+    elseif toolName == "start_remote_spy" then
+        local ok, msg = AgentEnv.startRemoteSpy({ filter = args.filter })
+        return {
+            status = ok and "success" or "error",
+            output = tostring(msg)
+        }
+
+    elseif toolName == "get_remote_logs" then
+        local rawLogs = sanitizeForJSON(AgentEnv.RemoteLogs)
+        local formattedLogs = {}
+        for _, logItem in ipairs(rawLogs) do
+            if typeof(logItem) == "table" then
+                local str = string.format("[%s] %s:%s(%s)", tostring(logItem.time or ""), tostring(logItem.remote or logItem.name or ""), tostring(logItem.method or ""), safeJSONEncode(logItem.args) or "")
+                table.insert(formattedLogs, str)
+            else
+                table.insert(formattedLogs, tostring(logItem))
+            end
+        end
+        return {
+            status = "success",
+            logs = formattedLogs,
+            output = string.format("當前獲取到 %d 條攔截日誌:\n%s", #AgentEnv.RemoteLogs, #formattedLogs > 0 and table.concat(formattedLogs, "\n") or "(無攔截日誌)")
+        }
+
+    elseif toolName == "set_noclip" then
+        local state = args.enabled == true
+        AgentEnv.setNoclip(state)
+        return {
+            status = "success",
+            output = string.format("穿牆模式 (Noclip) 已設為: %s", state and "開啟" or "關閉")
+        }
+
+    elseif toolName == "read_file" then
+        local fn = args.filename or ""
+        local cleanFn = fn:gsub("%.%.", ""):gsub("[\\/]", ""):lower()
+        if cleanFn == "gemini_key.txt" or cleanFn == "settings.json" or cleanFn == "system_prompt.txt" or cleanFn == "sessions.json" then
+            return { status = "error", output = "安全原則阻擋: 禁止存取系統保護設定檔案 (" .. cleanFn .. ")" }
+        end
+        local filePath = FOLDER_NAME .. "/" .. cleanFn
+        local ok, content = safeReadFile(filePath)
+        if ok and content then
+            return { status = "success", content = content, output = content }
+        else
+            return { status = "error", output = "檔案不存在或無法讀取: " .. filePath }
+        end
+
+    elseif toolName == "write_file" then
+        local fn = args.filename or ""
+        local cleanFn = fn:gsub("%.%.", ""):gsub("[\\/]", ""):lower()
+        if cleanFn == "gemini_key.txt" or cleanFn == "settings.json" or cleanFn == "system_prompt.txt" or cleanFn == "sessions.json" then
+            return { status = "error", output = "安全原則阻擋: 禁止竄改系統保護設定檔案 (" .. cleanFn .. ")" }
+        end
+        local filePath = FOLDER_NAME .. "/" .. cleanFn
+        local content = args.content or ""
+        ensureWorkspaceFolder()
+        local ok = safeWriteFile(filePath, content)
+        return {
+            status = ok and "success" or "error",
+            output = ok and ("成功寫入檔案: " .. filePath) or ("寫入檔案失敗: " .. filePath)
+        }
+
+    elseif toolName == "finish" then
+        return {
+            status = "finished",
+            summary = args.summary or "",
+            output = string.format("任務已圓滿完成！總結: %s", tostring(args.summary or ""))
+        }
+
+    else
+        return {
+            status = "error",
+            output = "未知的工具調用名稱: " .. tostring(toolName)
+        }
+    end
 end
 
 -- ==================== [ 8. BloxAgent 2.0 UI 架構 ] ====================
@@ -1310,6 +1970,8 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
 local mainStroke = Instance.new("UIStroke", MainFrame)
 mainStroke.Color = Color3.fromRGB(45, 48, 65)
 mainStroke.Thickness = 1.2
+local mainUIScale = Instance.new("UIScale", MainFrame)
+mainUIScale.Scale = tonumber(Config.GUI_SCALE) or 1.0
 
 -- 移動端懸浮球單擊即時開關 (無需連點兩次)
 local function setupMobileFloatToggle(btn, onToggle)
@@ -1417,7 +2079,7 @@ local SessionDrawerBtn = Instance.new("TextButton")
 SessionDrawerBtn.Size = UDim2.new(0, 68, 0, 26)
 SessionDrawerBtn.Position = UDim2.new(0, 8, 0, 6)
 SessionDrawerBtn.BackgroundColor3 = Color3.fromRGB(36, 40, 54)
-SessionDrawerBtn.Text = "📁 會話"
+SessionDrawerBtn.Text = "會話"
 SessionDrawerBtn.Font = Enum.Font.GothamBold
 SessionDrawerBtn.TextSize = 11
 SessionDrawerBtn.TextColor3 = Color3.fromRGB(200, 220, 255)
@@ -1582,16 +2244,19 @@ local function buildAgentCard(msg)
     statusBadge.Parent = headerFrame
 
     if msg.status == "generating" then
-        statusBadge.Text = "⏳ 生成中..."
+        statusBadge.Text = "推理中..."
         statusBadge.TextColor3 = Color3.fromRGB(255, 215, 0)
     elseif msg.status == "running" then
         statusBadge.Text = "⚡ 執行中..."
         statusBadge.TextColor3 = Color3.fromRGB(100, 200, 255)
-    elseif msg.status == "success" then
-        statusBadge.Text = "✓ 完成"
+    elseif msg.status == "waiting_approval" then
+        statusBadge.Text = "⏳ 審批待命"
+        statusBadge.TextColor3 = Color3.fromRGB(255, 180, 50)
+    elseif msg.status == "success" or msg.status == "finished" then
+        statusBadge.Text = "✅ 完成"
         statusBadge.TextColor3 = Color3.fromRGB(100, 255, 120)
     elseif msg.status == "error" then
-        statusBadge.Text = "✗ 錯誤"
+        statusBadge.Text = "❌ 報錯 (Reflexion)"
         statusBadge.TextColor3 = Color3.fromRGB(255, 100, 100)
     else
         statusBadge.Text = ""
@@ -1603,7 +2268,7 @@ local function buildAgentCard(msg)
         local thinkHeader = Instance.new("TextButton")
         thinkHeader.Size = UDim2.new(1, 0, 0, 24)
         thinkHeader.BackgroundColor3 = Color3.fromRGB(34, 28, 48)
-        thinkHeader.Text = string.format("  ▶ 🧠 思考鏈 (%d 字) [點擊展開]", #msg.thinking)
+        thinkHeader.Text = string.format("  ▶ 思考鏈 (%d 字) [點擊展開]", #msg.thinking)
         thinkHeader.Font = Enum.Font.GothamMedium
         thinkHeader.TextSize = 11
         thinkHeader.TextColor3 = Color3.fromRGB(190, 165, 255)
@@ -1641,8 +2306,8 @@ local function buildAgentCard(msg)
             isExpanded = not isExpanded
             thinkBody.Visible = isExpanded
             thinkHeader.Text = isExpanded
-                and string.format("  ▼ 🧠 思考鏈 (%d 字) [點擊收起]", #msg.thinking)
-                or string.format("  ▶ 🧠 思考鏈 (%d 字) [點擊展開]", #msg.thinking)
+                and string.format("  ▼ 思考鏈 (%d 字) [點擊收起]", #msg.thinking)
+                or string.format("  ▶ 思考鏈 (%d 字) [點擊展開]", #msg.thinking)
             scrollToBottom()
         end)
     end
@@ -1662,6 +2327,93 @@ local function buildAgentCard(msg)
         textLabel.TextXAlignment = Enum.TextXAlignment.Left
         textLabel.LayoutOrder = 4
         textLabel.Parent = card
+    end
+
+    -- 3.5 工具調用與觀測展示 (Tool Invocation & Observation Badge)
+    if msg.toolName then
+        local toolCard = Instance.new("Frame")
+        toolCard.Size = UDim2.new(1, 0, 0, 0)
+        toolCard.AutomaticSize = Enum.AutomaticSize.Y
+        toolCard.BackgroundColor3 = Color3.fromRGB(16, 18, 25)
+        toolCard.LayoutOrder = 4.5
+        Instance.new("UICorner", toolCard).CornerRadius = UDim.new(0, 6)
+        toolCard.Parent = card
+
+        local tcHeader = Instance.new("Frame")
+        tcHeader.Size = UDim2.new(1, 0, 0, 24)
+        tcHeader.BackgroundColor3 = Color3.fromRGB(22, 25, 36)
+        tcHeader.BorderSizePixel = 0
+        Instance.new("UICorner", tcHeader).CornerRadius = UDim.new(0, 6)
+        tcHeader.Parent = toolCard
+
+        local tcTitle = Instance.new("TextLabel")
+        tcTitle.Size = UDim2.new(1, -90, 1, 0)
+        tcTitle.Position = UDim2.new(0, 8, 0, 0)
+        tcTitle.BackgroundTransparency = 1
+        tcTitle.Text = "工具調用: " .. tostring(msg.toolName)
+        tcTitle.Font = Enum.Font.GothamBold
+        tcTitle.TextSize = 10.5
+        tcTitle.TextColor3 = Color3.fromRGB(120, 220, 255)
+        tcTitle.TextXAlignment = Enum.TextXAlignment.Left
+        tcTitle.Parent = tcHeader
+
+        local tcBadge = Instance.new("TextLabel")
+        tcBadge.Size = UDim2.new(0, 75, 0, 16)
+        tcBadge.Position = UDim2.new(1, -80, 0, 4)
+        tcBadge.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
+        tcBadge.Text = (msg.status == "running") and "執行中" or ((msg.error or msg.status == "error") and "失敗" or "成功")
+        tcBadge.Font = Enum.Font.Code
+        tcBadge.TextSize = 9
+        tcBadge.TextColor3 = (msg.status == "running") and Color3.fromRGB(255, 215, 0) or ((msg.error or msg.status == "error") and Color3.fromRGB(255, 100, 100) or Color3.fromRGB(100, 255, 120))
+        tcBadge.Parent = tcHeader
+        Instance.new("UICorner", tcBadge).CornerRadius = UDim.new(0, 3)
+
+        local tcContent = Instance.new("Frame")
+        tcContent.Size = UDim2.new(1, -16, 0, 0)
+        tcContent.Position = UDim2.new(0, 8, 0, 28)
+        tcContent.AutomaticSize = Enum.AutomaticSize.Y
+        tcContent.BackgroundTransparency = 1
+        tcContent.Parent = toolCard
+        local tcLayout = Instance.new("UIListLayout", tcContent)
+        tcLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        tcLayout.Padding = UDim.new(0, 4)
+
+        if msg.toolArgs and next(msg.toolArgs) and msg.toolName ~= "execute_luau" then
+            local argsLabel = Instance.new("TextLabel")
+            argsLabel.Size = UDim2.new(1, 0, 0, 0)
+            argsLabel.AutomaticSize = Enum.AutomaticSize.Y
+            argsLabel.BackgroundTransparency = 1
+            argsLabel.Text = "參數: " .. (safeJSONEncode(msg.toolArgs) or "")
+            argsLabel.Font = Enum.Font.Code
+            argsLabel.TextSize = 9.5
+            argsLabel.TextColor3 = Color3.fromRGB(180, 185, 200)
+            argsLabel.TextWrapped = true
+            argsLabel.TextXAlignment = Enum.TextXAlignment.Left
+            argsLabel.LayoutOrder = 1
+            argsLabel.Parent = tcContent
+        end
+
+        if msg.observation and #tostring(msg.observation) > 0 and msg.toolName ~= "execute_luau" then
+            local obsText = tostring(msg.observation)
+            if #obsText > 2500 then
+                obsText = obsText:sub(1, 2500) .. "\n...[觀測日誌過長已自動截斷]"
+            end
+            local obsLabel = Instance.new("TextLabel")
+            obsLabel.Size = UDim2.new(1, 0, 0, 0)
+            obsLabel.AutomaticSize = Enum.AutomaticSize.Y
+            obsLabel.BackgroundTransparency = 1
+            obsLabel.Text = "觀測結果:\n" .. obsText
+            obsLabel.Font = Enum.Font.Code
+            obsLabel.TextSize = 10
+            obsLabel.TextColor3 = Color3.fromRGB(140, 240, 190)
+            obsLabel.TextWrapped = true
+            obsLabel.TextXAlignment = Enum.TextXAlignment.Left
+            obsLabel.LayoutOrder = 2
+            obsLabel.Parent = tcContent
+        end
+
+        local tcPad = Instance.new("UIPadding", toolCard)
+        tcPad.PaddingBottom = UDim.new(0, 8)
     end
 
     -- 4. 代碼卡片 (Code block with Copy & Re-run)
@@ -1685,7 +2437,7 @@ local function buildAgentCard(msg)
         cTitle.Size = UDim2.new(0.5, 0, 1, 0)
         cTitle.Position = UDim2.new(0, 8, 0, 0)
         cTitle.BackgroundTransparency = 1
-        cTitle.Text = "💻 Luau 腳本"
+        cTitle.Text = "Luau 腳本"
         cTitle.Font = Enum.Font.GothamBold
         cTitle.TextSize = 11
         cTitle.TextColor3 = Color3.fromRGB(140, 255, 170)
@@ -1696,7 +2448,7 @@ local function buildAgentCard(msg)
         copyBtn.Size = UDim2.new(0, 60, 0, 20)
         copyBtn.Position = UDim2.new(1, -135, 0, 3)
         copyBtn.BackgroundColor3 = Color3.fromRGB(38, 42, 56)
-        copyBtn.Text = "📋 複製"
+        copyBtn.Text = "複製"
         copyBtn.Font = Enum.Font.GothamMedium
         copyBtn.TextSize = 10
         copyBtn.TextColor3 = Color3.fromRGB(220, 220, 230)
@@ -1706,19 +2458,20 @@ local function buildAgentCard(msg)
         copyBtn.MouseButton1Click:Connect(function()
             if setclipboard then
                 pcall(setclipboard, msg.code)
-                copyBtn.Text = "✓ 已複製"
-                task.delay(1.2, function() copyBtn.Text = "📋 複製" end)
+                copyBtn.Text = "已複製"
+                task.delay(1.2, function() copyBtn.Text = "複製" end)
             else
                 copyBtn.Text = "無剪貼簿"
-                task.delay(1.2, function() copyBtn.Text = "📋 複製" end)
+                task.delay(1.2, function() copyBtn.Text = "複製" end)
             end
         end)
 
         local reRunBtn = Instance.new("TextButton")
-        reRunBtn.Size = UDim2.new(0, 65, 0, 20)
-        reRunBtn.Position = UDim2.new(1, -70, 0, 3)
-        reRunBtn.BackgroundColor3 = Color3.fromRGB(30, 110, 60)
-        reRunBtn.Text = "▶️ 執行"
+        local isWaiting = (msg.status == "waiting_approval")
+        reRunBtn.Size = isWaiting and UDim2.new(0, 85, 0, 20) or UDim2.new(0, 65, 0, 20)
+        reRunBtn.Position = isWaiting and UDim2.new(1, -90, 0, 3) or UDim2.new(1, -70, 0, 3)
+        reRunBtn.BackgroundColor3 = isWaiting and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(30, 110, 60)
+        reRunBtn.Text = isWaiting and "▶️ 批准執行" or "執行"
         reRunBtn.Font = Enum.Font.GothamBold
         reRunBtn.TextSize = 10
         reRunBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1747,8 +2500,8 @@ local function buildAgentCard(msg)
         cPad.PaddingBottom = UDim.new(0, 8)
     end
 
-    -- 5. 沙盒終端輸出 (Terminal console output)
-    if (msg.logs and #msg.logs > 0) or msg.error then
+    -- 5. ACI 終端輸出 (Terminal console output)
+    if (msg.logs and #msg.logs > 0) or msg.error or (msg.code and msg.observation and #msg.observation > 0) then
         local termCard = Instance.new("Frame")
         termCard.Size = UDim2.new(1, 0, 0, 0)
         termCard.AutomaticSize = Enum.AutomaticSize.Y
@@ -1761,7 +2514,7 @@ local function buildAgentCard(msg)
         termHeader.Size = UDim2.new(1, -12, 0, 22)
         termHeader.Position = UDim2.new(0, 6, 0, 2)
         termHeader.BackgroundTransparency = 1
-        termHeader.Text = msg.error and "❌ 沙盒終端報錯" or "📋 沙盒終端輸出"
+        termHeader.Text = msg.error and "ACI 終端報錯 (Traceback)" or "ACI 終端輸出 (Output)"
         termHeader.Font = Enum.Font.GothamBold
         termHeader.TextSize = 10
         termHeader.TextColor3 = msg.error and Color3.fromRGB(255, 100, 100) or Color3.fromRGB(100, 220, 255)
@@ -1772,10 +2525,15 @@ local function buildAgentCard(msg)
         if msg.error then
             table.insert(logLines, "[Error] " .. tostring(msg.error))
         end
-        if msg.logs then
+        if msg.logs and #msg.logs > 0 then
             for _, l in ipairs(msg.logs) do
                 table.insert(logLines, l)
             end
+        elseif msg.observation and #msg.observation > 0 and not msg.error then
+            table.insert(logLines, msg.observation)
+        end
+        if #logLines == 0 then
+            table.insert(logLines, "(無終端 print 輸出)")
         end
 
         local termText = Instance.new("TextLabel")
@@ -1818,7 +2576,7 @@ local function renderActiveSessionChat()
         emptyText.Size = UDim2.new(1, -20, 1, 0)
         emptyText.Position = UDim2.new(0, 10, 0, 0)
         emptyText.BackgroundTransparency = 1
-        emptyText.Text = "👋 歡迎使用 BloxAgent 2.0！\n請在下方輸入指令（支援單次生成與自主修復循環）。"
+        emptyText.Text = "歡迎使用 BloxAgent Pro (CodeAct 運行時)！\n請在下方輸入任務指令，模型將直接生成並執行 Luau 代碼完成目標。"
         emptyText.Font = Enum.Font.Gotham
         emptyText.TextSize = 12
         emptyText.TextColor3 = Color3.fromRGB(170, 175, 195)
@@ -1865,7 +2623,7 @@ local DrawerTitle = Instance.new("TextLabel")
 DrawerTitle.Size = UDim2.new(0.6, 0, 1, 0)
 DrawerTitle.Position = UDim2.new(0, 10, 0, 0)
 DrawerTitle.BackgroundTransparency = 1
-DrawerTitle.Text = "📁 會話列表 (Sessions)"
+DrawerTitle.Text = "會話列表 (Sessions)"
 DrawerTitle.Font = Enum.Font.GothamBold
 DrawerTitle.TextSize = 12
 DrawerTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1877,7 +2635,7 @@ local NewSessBtn = Instance.new("TextButton")
 NewSessBtn.Size = UDim2.new(0, 60, 0, 24)
 NewSessBtn.Position = UDim2.new(1, -98, 0, 7)
 NewSessBtn.BackgroundColor3 = Color3.fromRGB(35, 140, 70)
-NewSessBtn.Text = "➕ 新增"
+NewSessBtn.Text = "+ 新增"
 NewSessBtn.Font = Enum.Font.GothamBold
 NewSessBtn.TextSize = 10
 NewSessBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1952,7 +2710,7 @@ local function renderDrawerSessionList()
         delBtn.Size = UDim2.new(0, 24, 0, 24)
         delBtn.Position = UDim2.new(1, -30, 0, 7)
         delBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-        delBtn.Text = "🗑️"
+        delBtn.Text = "✕"
         delBtn.TextSize = 11
         delBtn.ZIndex = 53
         delBtn.Parent = itemCard
@@ -1960,8 +2718,8 @@ local function renderDrawerSessionList()
 
         delBtn.MouseButton1Click:Connect(function()
             if #SessionManager.List <= 1 then
-                delBtn.Text = "✗"
-                task.delay(1.2, function() delBtn.Text = "🗑️" end)
+                delBtn.Text = "─"
+                task.delay(1.2, function() delBtn.Text = "✕" end)
                 return
             end
             for i, s in ipairs(SessionManager.List) do
@@ -2033,7 +2791,7 @@ local CloseSetBtn = Instance.new("TextButton")
 CloseSetBtn.Size = UDim2.new(0, 80, 0, 24)
 CloseSetBtn.Position = UDim2.new(1, -88, 0, 7)
 CloseSetBtn.BackgroundColor3 = Color3.fromRGB(40, 140, 70)
-CloseSetBtn.Text = "✓ 儲存並關閉"
+CloseSetBtn.Text = "儲存並關閉"
 CloseSetBtn.Font = Enum.Font.GothamBold
 CloseSetBtn.TextSize = 10
 CloseSetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2079,8 +2837,122 @@ local function makeSectionHeader(text, order)
     return lbl
 end
 
+-- 通用橫向滑塊建構器 (Reusable Horizontal Slider Builder)
+-- config = { layoutOrder, min, max, step, default, format(val)->str, color, onChange(val) }
+local _activeSliderUpdate = nil  -- 全域拖曳中的滑塊更新函數 (一次只有一個滑塊在拖曳)
+local function makeSlider(config)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 28)
+    row.BackgroundTransparency = 1
+    row.LayoutOrder = config.layoutOrder
+    row.ZIndex = 62
+    row.Parent = SetScroll
+
+    -- 軌道背景 (Track)
+    local track = Instance.new("TextButton")
+    track.Size = UDim2.new(0.7, 0, 0, 8)
+    track.Position = UDim2.new(0, 0, 0.5, -4)
+    track.BackgroundColor3 = Color3.fromRGB(40, 42, 55)
+    track.AutoButtonColor = false
+    track.Text = ""
+    track.ZIndex = 63
+    track.Parent = row
+    Instance.new("UICorner", track).CornerRadius = UDim.new(0, 4)
+
+    -- 填充條 (Fill bar)
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = config.color or Color3.fromRGB(80, 160, 255)
+    fill.ZIndex = 64
+    fill.ClipsDescendants = true
+    fill.Parent = track
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 4)
+
+    -- 拖曳圓鈕 (Thumb)
+    local thumb = Instance.new("Frame")
+    thumb.Size = UDim2.new(0, 16, 0, 16)
+    thumb.AnchorPoint = Vector2.new(0.5, 0.5)
+    thumb.Position = UDim2.new(0, 0, 0.5, 0)
+    thumb.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    thumb.ZIndex = 66
+    thumb.Parent = track
+    Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
+    local thumbStroke = Instance.new("UIStroke", thumb)
+    thumbStroke.Color = config.color or Color3.fromRGB(80, 160, 255)
+    thumbStroke.Thickness = 1.5
+
+    -- 數值標籤 (Value Label)
+    local valLabel = Instance.new("TextLabel")
+    valLabel.Size = UDim2.new(0.28, 0, 1, 0)
+    valLabel.Position = UDim2.new(0.72, 0, 0, 0)
+    valLabel.BackgroundTransparency = 1
+    valLabel.Font = Enum.Font.Code
+    valLabel.TextSize = 10
+    valLabel.TextColor3 = config.color or Color3.fromRGB(180, 185, 200)
+    valLabel.TextXAlignment = Enum.TextXAlignment.Right
+    valLabel.ZIndex = 63
+    valLabel.Parent = row
+
+    local min = config.min
+    local max = config.max
+    local step = config.step
+    local currentVal = config.default or min
+
+    local function snapValue(rawVal)
+        if step and step > 0 then
+            rawVal = math.floor(rawVal / step + 0.5) * step
+            rawVal = tonumber(string.format("%." .. math.max(0, -math.floor(math.log10(step + 1e-9))) .. "f", rawVal)) or rawVal
+        end
+        return math.clamp(rawVal, min, max)
+    end
+
+    local function setVisual(val)
+        local t = math.clamp((val - min) / (max - min), 0, 1)
+        fill.Size = UDim2.new(t, 0, 1, 0)
+        thumb.Position = UDim2.new(t, 0, 0.5, 0)
+        valLabel.Text = config.format(val)
+    end
+
+    local function updateFromX(absX)
+        local trackPos = track.AbsolutePosition.X
+        local trackWidth = track.AbsoluteSize.X
+        if trackWidth < 1 then return end
+        local t = math.clamp((absX - trackPos) / trackWidth, 0, 1)
+        currentVal = snapValue(min + t * (max - min))
+        setVisual(currentVal)
+        if config.onChange then config.onChange(currentVal) end
+    end
+
+    setVisual(currentVal)
+
+    -- 點擊與拖曳邏輯 (Click & Drag)
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            updateFromX(input.Position.X)
+            _activeSliderUpdate = updateFromX
+        end
+    end)
+
+    return { frame = row, setVisual = setVisual, getValue = function() return currentVal end }
+end
+
+-- 全域拖曳追蹤 (統一由一個連線處理所有滑塊拖曳)
+UserInputService.InputChanged:Connect(function(input)
+    if _activeSliderUpdate and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        _activeSliderUpdate(input.Position.X)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if _activeSliderUpdate then
+            _activeSliderUpdate = nil
+            saveConfig()
+        end
+    end
+end)
+
 -- 1. API 金鑰設定
-makeSectionHeader("🔑 Google AI Studio API Key", 1)
+makeSectionHeader("Google AI Studio API Key", 1)
 
 local KeyInputBox = Instance.new("TextBox")
 KeyInputBox.Size = UDim2.new(1, 0, 0, 28)
@@ -2105,7 +2977,7 @@ KeyInputBox.FocusLost:Connect(function()
 end)
 
 -- 2. 模型設定
-makeSectionHeader("🤖 模型選擇 (Model Selection)", 3)
+makeSectionHeader("模型選擇 (Model Selection)", 3)
 
 local ModelInputBox = Instance.new("TextBox")
 ModelInputBox.Size = UDim2.new(1, 0, 0, 28)
@@ -2159,8 +3031,8 @@ for idx, mName in ipairs(QUICK_MODELS) do
     end)
 end
 
--- 3. 自主循環與修復次數
-makeSectionHeader("⚡ 自主修復循環 (Autonomous Re-act Loop)", 6)
+-- 3. Agent 執行設置
+makeSectionHeader("Agent 執行設置 (Execution & Tool Options)", 6)
 
 local AutoLoopRow = Instance.new("Frame")
 AutoLoopRow.Size = UDim2.new(1, 0, 0, 28)
@@ -2169,22 +3041,10 @@ AutoLoopRow.LayoutOrder = 7
 AutoLoopRow.ZIndex = 62
 AutoLoopRow.Parent = SetScroll
 
-local AutoLoopToggleBtn = Instance.new("TextButton")
-AutoLoopToggleBtn.Size = UDim2.new(0.5, -4, 1, 0)
-AutoLoopToggleBtn.BackgroundColor3 = Config.AUTONOMOUS_MODE and Color3.fromRGB(35, 140, 70) or Color3.fromRGB(50, 52, 65)
-AutoLoopToggleBtn.Text = Config.AUTONOMOUS_MODE and "自主修復: 開啟 (On)" or "自主修復: 關閉 (Off)"
-AutoLoopToggleBtn.Font = Enum.Font.GothamBold
-AutoLoopToggleBtn.TextSize = 10
-AutoLoopToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AutoLoopToggleBtn.ZIndex = 63
-AutoLoopToggleBtn.Parent = AutoLoopRow
-Instance.new("UICorner", AutoLoopToggleBtn).CornerRadius = UDim.new(0, 4)
-
 local AutoExecBtn = Instance.new("TextButton")
-AutoExecBtn.Size = UDim2.new(0.5, -4, 1, 0)
-AutoExecBtn.Position = UDim2.new(0.5, 4, 0, 0)
+AutoExecBtn.Size = UDim2.new(1, 0, 1, 0)
 AutoExecBtn.BackgroundColor3 = Config.AUTO_EXECUTE and Color3.fromRGB(30, 100, 150) or Color3.fromRGB(50, 52, 65)
-AutoExecBtn.Text = Config.AUTO_EXECUTE and "代碼自動執行: 開" or "代碼自動執行: 關"
+AutoExecBtn.Text = Config.AUTO_EXECUTE and "CodeAct 自動執行: 開 (自主長程迴圈，無限制輪次)" or "CodeAct 自動執行: 關 (手動單步審批)"
 AutoExecBtn.Font = Enum.Font.GothamBold
 AutoExecBtn.TextSize = 10
 AutoExecBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2192,22 +3052,51 @@ AutoExecBtn.ZIndex = 63
 AutoExecBtn.Parent = AutoLoopRow
 Instance.new("UICorner", AutoExecBtn).CornerRadius = UDim.new(0, 4)
 
-AutoLoopToggleBtn.MouseButton1Click:Connect(function()
-    Config.AUTONOMOUS_MODE = not Config.AUTONOMOUS_MODE
-    AutoLoopToggleBtn.BackgroundColor3 = Config.AUTONOMOUS_MODE and Color3.fromRGB(35, 140, 70) or Color3.fromRGB(50, 52, 65)
-    AutoLoopToggleBtn.Text = Config.AUTONOMOUS_MODE and "自主修復: 開啟 (On)" or "自主修復: 關閉 (Off)"
-    saveConfig()
-end)
-
 AutoExecBtn.MouseButton1Click:Connect(function()
     Config.AUTO_EXECUTE = not Config.AUTO_EXECUTE
     AutoExecBtn.BackgroundColor3 = Config.AUTO_EXECUTE and Color3.fromRGB(30, 100, 150) or Color3.fromRGB(50, 52, 65)
-    AutoExecBtn.Text = Config.AUTO_EXECUTE and "代碼自動執行: 開" or "代碼自動執行: 關"
+    AutoExecBtn.Text = Config.AUTO_EXECUTE and "CodeAct 自動執行: 開 (自主長程迴圈，無限制輪次)" or "CodeAct 自動執行: 關 (手動單步審批)"
     saveConfig()
 end)
 
+-- 3.5 上下文治理與自動壓縮
+local AutoCompactRow = Instance.new("Frame")
+AutoCompactRow.Size = UDim2.new(1, 0, 0, 28)
+AutoCompactRow.BackgroundTransparency = 1
+AutoCompactRow.LayoutOrder = 8
+AutoCompactRow.ZIndex = 62
+AutoCompactRow.Parent = SetScroll
+
+local AutoCompactBtn = Instance.new("TextButton")
+AutoCompactBtn.Size = UDim2.new(1, 0, 1, 0)
+AutoCompactBtn.BackgroundColor3 = Config.AUTO_COMPACT and Color3.fromRGB(30, 120, 100) or Color3.fromRGB(50, 52, 65)
+AutoCompactBtn.Text = Config.AUTO_COMPACT and "自動記憶壓縮: 開" or "自動記憶壓縮: 關"
+AutoCompactBtn.Font = Enum.Font.GothamBold
+AutoCompactBtn.TextSize = 10
+AutoCompactBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoCompactBtn.ZIndex = 63
+AutoCompactBtn.Parent = AutoCompactRow
+Instance.new("UICorner", AutoCompactBtn).CornerRadius = UDim.new(0, 4)
+
+AutoCompactBtn.MouseButton1Click:Connect(function()
+    Config.AUTO_COMPACT = not Config.AUTO_COMPACT
+    AutoCompactBtn.BackgroundColor3 = Config.AUTO_COMPACT and Color3.fromRGB(30, 120, 100) or Color3.fromRGB(50, 52, 65)
+    AutoCompactBtn.Text = Config.AUTO_COMPACT and "自動記憶壓縮: 開" or "自動記憶壓縮: 關"
+    saveConfig()
+end)
+
+makeSectionHeader("壓縮閾值 (Compact Threshold)", 8.5)
+makeSlider({
+    layoutOrder = 8.6,
+    min = 4, max = 20, step = 2,
+    default = tonumber(Config.COMPACT_THRESHOLD) or 8,
+    format = function(v) return string.format("%d 輪", v) end,
+    color = Color3.fromRGB(60, 180, 140),
+    onChange = function(v) Config.COMPACT_THRESHOLD = v end,
+})
+
 -- 4. 思考深度 (Think Level)
-makeSectionHeader("🧠 思考深度 (Think Level)", 8)
+makeSectionHeader("思考深度 (Think Level)", 9)
 local ThinkRow = Instance.new("Frame")
 ThinkRow.Size = UDim2.new(1, 0, 0, 24)
 ThinkRow.BackgroundTransparency = 1
@@ -2243,7 +3132,7 @@ for idx, lvl in ipairs(THINK_LEVELS) do
 end
 
 -- 5. PC 呼出鍵設定 (PC Keybind)
-makeSectionHeader("⌨️ PC 介面呼出快捷鍵 (PC Toggle Key)", 10)
+makeSectionHeader("PC 介面呼出快捷鍵 (PC Toggle Key)", 10)
 local KeyRow = Instance.new("Frame")
 KeyRow.Size = UDim2.new(1, 0, 0, 24)
 KeyRow.BackgroundTransparency = 1
@@ -2279,151 +3168,123 @@ for idx, kName in ipairs(PC_KEYS) do
 end
 
 -- 6. 背景透明度 (GUI Transparency)
-makeSectionHeader("🎨 面板背景透明度 (Transparency)", 12)
-local TransRow = Instance.new("Frame")
-TransRow.Size = UDim2.new(1, 0, 0, 24)
-TransRow.BackgroundTransparency = 1
-TransRow.LayoutOrder = 13
-TransRow.ZIndex = 62
-TransRow.Parent = SetScroll
+makeSectionHeader("面板背景透明度 (Transparency)", 12)
+makeSlider({
+    layoutOrder = 12.5,
+    min = 0, max = 0.5, step = 0.05,
+    default = tonumber(Config.GUI_TRANSPARENCY) or 0.05,
+    format = function(v) return string.format("%.0f%%", v * 100) end,
+    color = Color3.fromRGB(100, 140, 200),
+    onChange = function(v)
+        Config.GUI_TRANSPARENCY = v
+        MainFrame.BackgroundTransparency = v
+    end,
+})
 
-local TRANS_OPTS = { { label = "0% (純黑)", val = 0.0 }, { label = "10%", val = 0.1 }, { label = "20%", val = 0.2 }, { label = "30%", val = 0.3 } }
-for idx, opt in ipairs(TRANS_OPTS) do
-    local trBtn = Instance.new("TextButton")
-    trBtn.Size = UDim2.new(0.24, -2, 1, 0)
-    trBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
-    trBtn.BackgroundColor3 = Color3.fromRGB(35, 36, 46)
-    trBtn.Text = opt.label
-    trBtn.Font = Enum.Font.GothamMedium
-    trBtn.TextSize = 9
-    trBtn.TextColor3 = Color3.fromRGB(180, 185, 200)
-    trBtn.ZIndex = 63
-    trBtn.Parent = TransRow
-    Instance.new("UICorner", trBtn).CornerRadius = UDim.new(0, 4)
+-- 6.5 通信方式 (HTTP / WebSocket)
+makeSectionHeader("📡 通信方式 (Communication Method)", 13)
+local CommMethodRow = Instance.new("Frame")
+CommMethodRow.Size = UDim2.new(1, 0, 0, 28)
+CommMethodRow.BackgroundTransparency = 1
+CommMethodRow.LayoutOrder = 13.5
+CommMethodRow.ZIndex = 62
+CommMethodRow.Parent = SetScroll
 
-    trBtn.MouseButton1Click:Connect(function()
-        Config.GUI_TRANSPARENCY = opt.val
-        MainFrame.BackgroundTransparency = opt.val
+local COMM_METHODS = {
+    { key = "HTTP", label = "HTTP (標準 REST)", color = Color3.fromRGB(30, 100, 150) },
+    { key = "WebSocket", label = "WebSocket (Bidi 串流)", color = Color3.fromRGB(120, 60, 160) }
+}
+local commMethodButtons = {}
+
+for idx, opt in ipairs(COMM_METHODS) do
+    local cmBtn = Instance.new("TextButton")
+    cmBtn.Size = UDim2.new(0.5, -2, 1, 0)
+    cmBtn.Position = UDim2.new((idx - 1) * 0.5, 0, 0, 0)
+    local isCur = (Config.COMM_METHOD == opt.key)
+    cmBtn.BackgroundColor3 = isCur and opt.color or Color3.fromRGB(35, 36, 46)
+    cmBtn.Text = opt.label
+    cmBtn.Font = Enum.Font.GothamBold
+    cmBtn.TextSize = 10
+    cmBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+    cmBtn.ZIndex = 63
+    cmBtn.Parent = CommMethodRow
+    Instance.new("UICorner", cmBtn).CornerRadius = UDim.new(0, 4)
+    commMethodButtons[opt.key] = { btn = cmBtn, color = opt.color }
+
+    cmBtn.MouseButton1Click:Connect(function()
+        Config.COMM_METHOD = opt.key
+        for k, v in pairs(commMethodButtons) do
+            local sel = (k == opt.key)
+            v.btn.BackgroundColor3 = sel and v.color or Color3.fromRGB(35, 36, 46)
+            v.btn.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+        end
         saveConfig()
     end)
 end
+
+local CommMethodHint = Instance.new("TextLabel")
+CommMethodHint.Size = UDim2.new(1, 0, 0, 16)
+CommMethodHint.BackgroundTransparency = 1
+CommMethodHint.LayoutOrder = 13.6
+CommMethodHint.ZIndex = 62
+CommMethodHint.Text = "  HTTP: 相容所有模型 | WebSocket: 僅限 2.0-flash-exp / realtime 等 Bidi 模型"
+CommMethodHint.Font = Enum.Font.Code
+CommMethodHint.TextSize = 8
+CommMethodHint.TextColor3 = Color3.fromRGB(120, 130, 155)
+CommMethodHint.TextXAlignment = Enum.TextXAlignment.Left
+CommMethodHint.Parent = SetScroll
 
 -- 7. WebSocket 串流超時 (waitStart 逾時秒數)
-makeSectionHeader("⏱️ WebSocket 串流逾時 (waitStart 超時秒數)", 14)
-local WsTimeoutRow = Instance.new("Frame")
-WsTimeoutRow.Size = UDim2.new(1, 0, 0, 24)
-WsTimeoutRow.BackgroundTransparency = 1
-WsTimeoutRow.LayoutOrder = 15
-WsTimeoutRow.ZIndex = 62
-WsTimeoutRow.Parent = SetScroll
+-- 7. WebSocket 串流超時
+makeSectionHeader("WebSocket 串流逾時 (waitStart 秒數)", 14)
+makeSlider({
+    layoutOrder = 14.5,
+    min = 5, max = 90, step = 5,
+    default = tonumber(Config.WS_TIMEOUT) or 25,
+    format = function(v) return string.format("%d 秒", v) end,
+    color = Color3.fromRGB(40, 120, 180),
+    onChange = function(v) Config.WS_TIMEOUT = v end,
+})
 
-local WS_TIMEOUT_OPTS = { 15, 25, 40, 60 }
-local wsTimeoutButtons = {}
+-- 8. 代碼執行看門狗逾時
+makeSectionHeader("🛡️ 執行看門狗逾時 (Watchdog 秒數)", 16)
+makeSlider({
+    layoutOrder = 16.5,
+    min = 5, max = 120, step = 5,
+    default = tonumber(Config.WATCHDOG_TIMEOUT) or 20,
+    format = function(v) return string.format("%d 秒", v) end,
+    color = Color3.fromRGB(200, 120, 40),
+    onChange = function(v) Config.WATCHDOG_TIMEOUT = v end,
+})
 
-for idx, sec in ipairs(WS_TIMEOUT_OPTS) do
-    local sBtn = Instance.new("TextButton")
-    sBtn.Size = UDim2.new(0.24, -2, 1, 0)
-    sBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
-    local isCur = (tonumber(Config.WS_TIMEOUT) == sec)
-    sBtn.BackgroundColor3 = isCur and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(35, 36, 46)
-    sBtn.Text = tostring(sec) .. " 秒" .. (sec == 25 and " (預設)" or "")
-    sBtn.Font = Enum.Font.GothamMedium
-    sBtn.TextSize = 9
-    sBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
-    sBtn.ZIndex = 63
-    sBtn.Parent = WsTimeoutRow
-    Instance.new("UICorner", sBtn).CornerRadius = UDim.new(0, 4)
-    wsTimeoutButtons[sec] = sBtn
+-- 9. 生成溫度
+makeSectionHeader("生成溫度 (Temperature)", 18)
+makeSlider({
+    layoutOrder = 18.5,
+    min = 0, max = 2.0, step = 0.1,
+    default = tonumber(Config.TEMPERATURE) or 0.1,
+    format = function(v) return string.format("%.1f", v) end,
+    color = Color3.fromRGB(180, 60, 150),
+    onChange = function(v) Config.TEMPERATURE = v end,
+})
 
-    sBtn.MouseButton1Click:Connect(function()
-        Config.WS_TIMEOUT = sec
-        for sVal, b in pairs(wsTimeoutButtons) do
-            local sel = (sVal == sec)
-            b.BackgroundColor3 = sel and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(35, 36, 46)
-            b.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
-        end
-        saveConfig()
-    end)
-end
+-- 9.5 GUI 縮放比例
+makeSectionHeader("🔍 GUI 縮放比例 (GUI Scale)", 19)
+makeSlider({
+    layoutOrder = 19.5,
+    min = 0.5, max = 2.0, step = 0.1,
+    default = tonumber(Config.GUI_SCALE) or 1.0,
+    format = function(v) return string.format("%.1fx", v) end,
+    color = Color3.fromRGB(80, 180, 220),
+    onChange = function(v)
+        Config.GUI_SCALE = v
+        if mainUIScale then mainUIScale.Scale = v end
+    end,
+})
 
--- 8. 代碼沙盒執行看門狗逾時 (Execution Watchdog Timeout)
-makeSectionHeader("🛡️ 沙盒執行看門狗逾時 (Watchdog 超時秒數)", 16)
-local WatchdogTimeoutRow = Instance.new("Frame")
-WatchdogTimeoutRow.Size = UDim2.new(1, 0, 0, 24)
-WatchdogTimeoutRow.BackgroundTransparency = 1
-WatchdogTimeoutRow.LayoutOrder = 17
-WatchdogTimeoutRow.ZIndex = 62
-WatchdogTimeoutRow.Parent = SetScroll
-
-local WATCHDOG_TIMEOUT_OPTS = { 10, 20, 35, 60 }
-local watchdogButtons = {}
-
-for idx, sec in ipairs(WATCHDOG_TIMEOUT_OPTS) do
-    local wBtn = Instance.new("TextButton")
-    wBtn.Size = UDim2.new(0.24, -2, 1, 0)
-    wBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
-    local isCur = (tonumber(Config.WATCHDOG_TIMEOUT) == sec)
-    wBtn.BackgroundColor3 = isCur and Color3.fromRGB(140, 80, 30) or Color3.fromRGB(35, 36, 46)
-    wBtn.Text = tostring(sec) .. " 秒" .. (sec == 20 and " (預設)" or "")
-    wBtn.Font = Enum.Font.GothamMedium
-    wBtn.TextSize = 9
-    wBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
-    wBtn.ZIndex = 63
-    wBtn.Parent = WatchdogTimeoutRow
-    Instance.new("UICorner", wBtn).CornerRadius = UDim.new(0, 4)
-    watchdogButtons[sec] = wBtn
-
-    wBtn.MouseButton1Click:Connect(function()
-        Config.WATCHDOG_TIMEOUT = sec
-        for sVal, b in pairs(watchdogButtons) do
-            local sel = (sVal == sec)
-            b.BackgroundColor3 = sel and Color3.fromRGB(140, 80, 30) or Color3.fromRGB(35, 36, 46)
-            b.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
-        end
-        saveConfig()
-    end)
-end
-
--- 9. 生成溫度 (Temperature)
-makeSectionHeader("🌡️ 生成溫度 (Temperature / 嚴謹 vs 創造力)", 18)
-local TempRow = Instance.new("Frame")
-TempRow.Size = UDim2.new(1, 0, 0, 24)
-TempRow.BackgroundTransparency = 1
-TempRow.LayoutOrder = 19
-TempRow.ZIndex = 62
-TempRow.Parent = SetScroll
-
-local TEMP_OPTS = { { label = "0.0 (精準)", val = 0.0 }, { label = "0.1 (預設)", val = 0.1 }, { label = "0.4", val = 0.4 }, { label = "0.7", val = 0.7 } }
-local tempButtons = {}
-
-for idx, opt in ipairs(TEMP_OPTS) do
-    local tpBtn = Instance.new("TextButton")
-    tpBtn.Size = UDim2.new(0.24, -2, 1, 0)
-    tpBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
-    local isCur = (tonumber(Config.TEMPERATURE) == opt.val)
-    tpBtn.BackgroundColor3 = isCur and Color3.fromRGB(130, 40, 110) or Color3.fromRGB(35, 36, 46)
-    tpBtn.Text = opt.label
-    tpBtn.Font = Enum.Font.GothamMedium
-    tpBtn.TextSize = 9
-    tpBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
-    tpBtn.ZIndex = 63
-    tpBtn.Parent = TempRow
-    Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 4)
-    tempButtons[opt.val] = tpBtn
-
-    tpBtn.MouseButton1Click:Connect(function()
-        Config.TEMPERATURE = opt.val
-        for tVal, b in pairs(tempButtons) do
-            local sel = (tVal == opt.val)
-            b.BackgroundColor3 = sel and Color3.fromRGB(130, 40, 110) or Color3.fromRGB(35, 36, 46)
-            b.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
-        end
-        saveConfig()
-    end)
-end
 
 -- 10. 當前 GUI 掛載層級提示 (GUI Location Banner)
-makeSectionHeader("🛡️ 當前環境掛載層級 (GUI Environment)", 20)
+makeSectionHeader("當前環境掛載層級 (GUI Environment)", 20)
 local GuiMountBanner = Instance.new("TextLabel")
 GuiMountBanner.Size = UDim2.new(1, 0, 0, 26)
 GuiMountBanner.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
@@ -2461,28 +3322,32 @@ ControlSubRow.Position = UDim2.new(0, 6, 0, 4)
 ControlSubRow.BackgroundTransparency = 1
 ControlSubRow.Parent = BottomBar
 
-local AutoLoopToggleIndicator = Instance.new("TextButton")
-AutoLoopToggleIndicator.Size = UDim2.new(0, 110, 1, 0)
-AutoLoopToggleIndicator.BackgroundColor3 = Config.AUTONOMOUS_MODE and Color3.fromRGB(30, 90, 50) or Color3.fromRGB(45, 46, 56)
-AutoLoopToggleIndicator.Text = Config.AUTONOMOUS_MODE and "⚡ 自主模式: 開" or "⚡ 自主模式: 關"
-AutoLoopToggleIndicator.Font = Enum.Font.GothamBold
-AutoLoopToggleIndicator.TextSize = 10
-AutoLoopToggleIndicator.TextColor3 = Color3.fromRGB(240, 245, 255)
-AutoLoopToggleIndicator.Parent = ControlSubRow
-Instance.new("UICorner", AutoLoopToggleIndicator).CornerRadius = UDim.new(0, 4)
+local AgentLoopStatusBadge = Instance.new("TextLabel")
+AgentLoopStatusBadge.Size = UDim2.new(0, 130, 1, 0)
+AgentLoopStatusBadge.BackgroundColor3 = Color3.fromRGB(36, 40, 54)
+AgentLoopStatusBadge.Text = "CodeAct: 就緒"
+AgentLoopStatusBadge.Font = Enum.Font.GothamMedium
+AgentLoopStatusBadge.TextSize = 10
+AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(120, 220, 255)
+AgentLoopStatusBadge.Parent = ControlSubRow
+Instance.new("UICorner", AgentLoopStatusBadge).CornerRadius = UDim.new(0, 4)
 
-AutoLoopToggleIndicator.MouseButton1Click:Connect(function()
-    Config.AUTONOMOUS_MODE = not Config.AUTONOMOUS_MODE
-    AutoLoopToggleIndicator.BackgroundColor3 = Config.AUTONOMOUS_MODE and Color3.fromRGB(30, 90, 50) or Color3.fromRGB(45, 46, 56)
-    AutoLoopToggleIndicator.Text = Config.AUTONOMOUS_MODE and "⚡ 自主模式: 開" or "⚡ 自主模式: 關"
-    saveConfig()
-end)
+local StepBadge = Instance.new("TextLabel")
+StepBadge.Size = UDim2.new(0, 75, 1, 0)
+StepBadge.Position = UDim2.new(0, 136, 0, 0)
+StepBadge.BackgroundColor3 = Color3.fromRGB(36, 40, 54)
+StepBadge.Text = "輪次: 0"
+StepBadge.Font = Enum.Font.Code
+StepBadge.TextSize = 9.5
+StepBadge.TextColor3 = Color3.fromRGB(180, 185, 200)
+StepBadge.Parent = ControlSubRow
+Instance.new("UICorner", StepBadge).CornerRadius = UDim.new(0, 4)
 
 local ClearChatBtn = Instance.new("TextButton")
-ClearChatBtn.Size = UDim2.new(0, 85, 1, 0)
-ClearChatBtn.Position = UDim2.new(0, 116, 0, 0)
+ClearChatBtn.Size = UDim2.new(0, 75, 1, 0)
+ClearChatBtn.Position = UDim2.new(1, -75, 0, 0)
 ClearChatBtn.BackgroundColor3 = Color3.fromRGB(40, 42, 54)
-ClearChatBtn.Text = "🧹 清空對話"
+ClearChatBtn.Text = "清空對話"
 ClearChatBtn.Font = Enum.Font.GothamMedium
 ClearChatBtn.TextSize = 10
 ClearChatBtn.TextColor3 = Color3.fromRGB(200, 205, 215)
@@ -2495,8 +3360,8 @@ ClearChatBtn.MouseButton1Click:Connect(function()
     cur.history = {}
     saveSessionsToWorkspace()
     renderActiveSessionChat()
-    ClearChatBtn.Text = "✓ 已清空"
-    task.delay(1.2, function() ClearChatBtn.Text = "🧹 清空對話" end)
+    ClearChatBtn.Text = "已清空"
+    task.delay(1.2, function() ClearChatBtn.Text = "清空對話" end)
 end)
 
 local InputSubRow = Instance.new("Frame")
@@ -2523,7 +3388,7 @@ local SubmitBtn = Instance.new("TextButton")
 SubmitBtn.Size = UDim2.new(0, 78, 1, 0)
 SubmitBtn.Position = UDim2.new(1, -78, 0, 0)
 SubmitBtn.BackgroundColor3 = Color3.fromRGB(50, 120, 240)
-SubmitBtn.Text = "發送 ↵"
+SubmitBtn.Text = "發送"
 SubmitBtn.Font = Enum.Font.GothamBold
 SubmitBtn.TextSize = 12
 SubmitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2535,11 +3400,20 @@ local function resetBusyState()
     isBusy = false
     currentMainThread = nil
     currentCodeThread = nil
-    SubmitBtn.Text = "發送 ↵"
+    SubmitBtn.Text = "發送"
     SubmitBtn.BackgroundColor3 = Color3.fromRGB(50, 120, 240)
+    SubmitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    if AgentLoopStatusBadge then
+        AgentLoopStatusBadge.Text = "CodeAct: 就緒"
+        AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(120, 220, 255)
+    end
+    if StepBadge then
+        StepBadge.Text = "輪次: 0"
+    end
 end
 
 local function abortCurrentExecution(reason)
+    currentExecutionId = currentExecutionId + 1
     if activeWebSocket then
         pcall(function()
             if activeWebSocket.Close then activeWebSocket:Close()
@@ -2559,9 +3433,9 @@ local function abortCurrentExecution(reason)
     end
 
     local cur = getActiveSession()
-    if #cur.messages > 0 and cur.messages[#cur.messages].role == "assistant" and cur.messages[#cur.messages].status == "generating" then
+    if #cur.messages > 0 and cur.messages[#cur.messages].role == "assistant" and (cur.messages[#cur.messages].status == "generating" or cur.messages[#cur.messages].status == "running") then
         cur.messages[#cur.messages].status = "error"
-        cur.messages[#cur.messages].text = cur.messages[#cur.messages].text .. "\n\n⚠️ " .. tostring(reason or "已停止")
+        cur.messages[#cur.messages].text = cur.messages[#cur.messages].text .. "\n\n[已中止] " .. tostring(reason or "已停止")
     end
 
     resetBusyState()
@@ -2575,10 +3449,13 @@ executeCodeAction = function(codeToRun)
         return
     end
 
+    currentExecutionId = currentExecutionId + 1
+    local myExecId = currentExecutionId
+
     local cur = getActiveSession()
     local agentMsg = {
         role = "assistant",
-        text = "▶️ 手動重新執行代碼...",
+        text = "[手動執行代碼]...",
         thinking = "",
         code = codeToRun,
         logs = {},
@@ -2589,14 +3466,18 @@ executeCodeAction = function(codeToRun)
     renderActiveSessionChat()
 
     isBusy = true
-    SubmitBtn.Text = "⏹️ 停止"
-    SubmitBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    SubmitBtn.Text = "停止"
+    SubmitBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    SubmitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 
     currentMainThread = task.spawn(function()
-        local runOk, runErr, capturedLogs = executeInSandbox(codeToRun)
+        local runOk, runErr, capturedLogs = executeCodeAct(codeToRun)
+        if myExecId ~= currentExecutionId then return end
         agentMsg.status = runOk and "success" or "error"
         agentMsg.error = (not runOk) and runErr or nil
         agentMsg.logs = capturedLogs
+        local outText = (#capturedLogs > 0 and table.concat(capturedLogs, "\n") or "(無 print 輸出)")
+        agentMsg.observation = runOk and outText or string.format("代碼執行報錯:\n%s\n終端輸出:\n%s", tostring(runErr), outText)
         renderActiveSessionChat()
         saveSessionsToWorkspace()
         resetBusyState()
@@ -2623,8 +3504,12 @@ SubmitBtn.MouseButton1Click:Connect(function()
 
     PromptInputBox.Text = ""
     isBusy = true
-    SubmitBtn.Text = "⏹️ 停止"
-    SubmitBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    currentExecutionId = currentExecutionId + 1
+    local myExecId = currentExecutionId
+
+    SubmitBtn.Text = "停止"
+    SubmitBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    SubmitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 
     local cur = getActiveSession()
     table.insert(cur.messages, {
@@ -2635,16 +3520,40 @@ SubmitBtn.MouseButton1Click:Connect(function()
     renderActiveSessionChat()
 
     currentMainThread = task.spawn(function()
-        local currentPrompt = prompt
-        local maxSteps = Config.AUTONOMOUS_MODE and (Config.MAX_AUTO_STEPS or 3) or 1
-        local step = 1
+        table.insert(cur.history, {
+            role = "user",
+            parts = { { text = prompt } }
+        })
 
-        while step <= maxSteps and isBusy do
+        local turn = 1
+        local loopDone = false
+        local consecutiveErrors = 0
+
+        while isBusy and not loopDone do
+            if myExecId ~= currentExecutionId then return end
+
+            -- 1. Auto-Compact 治理檢查：當歷史累積達到閾值時觸發記憶語意壓縮
+            if Config.AUTO_COMPACT and #cur.history >= (tonumber(Config.COMPACT_THRESHOLD or 8) * 2) then
+                compactSessionHistory(cur, CurrentApiKey, Config.MODEL)
+                if myExecId ~= currentExecutionId or not isBusy then return end
+            end
+
+            if AgentLoopStatusBadge then
+                local commTag = (Config.COMM_METHOD == "WebSocket") and "WS" or "HTTP"
+                AgentLoopStatusBadge.Text = string.format("CodeAct 推理中 [%s] (第 %d 輪)", commTag, turn)
+                AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(120, 220, 255)
+            end
+            if StepBadge then
+                StepBadge.Text = string.format("輪次: %d", turn)
+            end
+
             local agentMsg = {
                 role = "assistant",
+                turn = turn,
                 text = "",
                 thinking = "",
                 code = nil,
+                observation = nil,
                 logs = {},
                 status = "generating",
                 time = os.date("%H:%M:%S")
@@ -2652,29 +3561,26 @@ SubmitBtn.MouseButton1Click:Connect(function()
             table.insert(cur.messages, agentMsg)
             renderActiveSessionChat()
 
-            local function onChunkUpdate(replyChunk, thinkChunk)
-                agentMsg.text = replyChunk
-                agentMsg.thinking = thinkChunk
-            end
-
-            local canUseWS = wsConnect and doesModelSupportBidiWS(Config.MODEL)
-            local success, reply, thinking
-
-            if canUseWS then
-                success, reply, thinking = callGeminiWebSocket(CurrentApiKey, Config.MODEL, currentPrompt, cur, onChunkUpdate)
+            -- CodeAct 模式發起通信 (依設定選擇 HTTP 或 WebSocket)
+            local success, reply, thinking, functionCalls, rawParts
+            if Config.COMM_METHOD == "WebSocket" and wsConnect then
+                success, reply, thinking = callGeminiWebSocket(CurrentApiKey, Config.MODEL, nil, cur)
+                functionCalls = {}
+                rawParts = {}
+                -- WebSocket 失敗時自動降級回 HTTP (Automatic Fallback)
                 if not success then
-                    logWarn("Net", "WebSocket 失敗，切換 sUNC HTTP: " .. tostring(reply))
-                    success, reply, thinking = callGeminiHTTP(CurrentApiKey, Config.MODEL, Config.THINK_LEVEL, currentPrompt, cur)
+                    logWarn("COMM", "WebSocket 通信失敗，自動降級至 HTTP 模式: " .. tostring(reply))
+                    success, reply, thinking, functionCalls, rawParts = callGeminiHTTP(CurrentApiKey, Config.MODEL, Config.THINK_LEVEL, nil, cur)
                 end
             else
-                success, reply, thinking = callGeminiHTTP(CurrentApiKey, Config.MODEL, Config.THINK_LEVEL, currentPrompt, cur)
+                success, reply, thinking, functionCalls, rawParts = callGeminiHTTP(CurrentApiKey, Config.MODEL, Config.THINK_LEVEL, nil, cur)
             end
 
-            if not isBusy then break end
+            if myExecId ~= currentExecutionId or not isBusy then return end
 
             if not success then
                 agentMsg.status = "error"
-                agentMsg.text = "✗ 通信失敗: " .. tostring(reply)
+                agentMsg.text = "通信失敗: " .. tostring(reply)
                 renderActiveSessionChat()
                 break
             end
@@ -2682,58 +3588,110 @@ SubmitBtn.MouseButton1Click:Connect(function()
             agentMsg.text = reply or ""
             agentMsg.thinking = thinking or ""
 
-            -- 更新 API 對話歷史
-            table.insert(cur.history, { role = "user", parts = { { text = currentPrompt } } })
-            table.insert(cur.history, { role = "model", parts = { { text = reply } } })
-            while #cur.history > (Config.MAX_HISTORY * 2) do
-                table.remove(cur.history, 1)
-                if #cur.history > 0 then table.remove(cur.history, 1) end
-            end
+            -- 記錄模型回覆到歷史
+            table.insert(cur.history, {
+                role = "model",
+                parts = (rawParts and #rawParts > 0) and rawParts or { { text = reply } }
+            })
 
             local luaCode = extractLuaCode(reply)
+
             if luaCode then
                 agentMsg.code = luaCode
                 cur.lastCode = luaCode
 
-                if Config.AUTO_EXECUTE then
+                if not Config.AUTO_EXECUTE then
+                    agentMsg.status = "waiting_approval"
+                    agentMsg.observation = "代碼已生成，等待手動審批執行 (可點擊代碼卡片上方的「▶️ 批准執行」，或在設定中開啟自動執行)"
+                    if AgentLoopStatusBadge then
+                        AgentLoopStatusBadge.Text = "⏳ 等待審批確認"
+                        AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(255, 180, 50)
+                    end
+                    renderActiveSessionChat()
+                    loopDone = true
+                else
                     agentMsg.status = "running"
+                    if AgentLoopStatusBadge then
+                        AgentLoopStatusBadge.Text = "⚡ 執行 Luau 代碼中..."
+                        AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(100, 255, 150)
+                    end
                     renderActiveSessionChat()
 
-                    local runOk, runErr, logs = executeInSandbox(luaCode)
-                    agentMsg.status = runOk and "success" or "error"
-                    agentMsg.error = (not runOk) and runErr or nil
-                    agentMsg.logs = logs
+                    local runOk, runErr, capturedLogs = executeCodeAct(luaCode)
+                    if myExecId ~= currentExecutionId or not isBusy then return end
 
-                    renderActiveSessionChat()
-                    saveSessionsToWorkspace()
+                    agentMsg.logs = capturedLogs
+                    local outText = (#capturedLogs > 0 and table.concat(capturedLogs, "\n") or "(無 print 輸出)")
 
                     if runOk then
-                        -- 執行成功，自主任務達成
-                        break
+                        consecutiveErrors = 0
+                        agentMsg.status = "success"
+                        agentMsg.observation = outText
+                        renderActiveSessionChat()
+
+                        table.insert(cur.history, {
+                            role = "user",
+                            parts = { { text = string.format("[執行觀測 Observation]\n狀態: 成功\n終端輸出:\n%s", outText) } }
+                        })
                     else
-                        -- 執行報錯，檢查是否繼續自主循環修復
-                        if Config.AUTONOMOUS_MODE and step < maxSteps and isBusy then
-                            logInfo("AutoFix", string.format("自主循環第 %d 步報錯，自動觸發第 %d 步修復...", step, step + 1))
-                            currentPrompt = string.format("[沙盒反饋: 執行失敗]\n錯誤原因: %s\n終端日誌:\n%s\n請檢視上述錯誤並輸出修正後的完整 Luau 代碼。", tostring(runErr), table.concat(logs, "\n"))
-                            step = step + 1
-                        else
-                            break
+                        consecutiveErrors = consecutiveErrors + 1
+                        agentMsg.status = "error"
+                        agentMsg.error = runErr
+                        agentMsg.observation = string.format("代碼執行報錯:\n%s\n終端輸出:\n%s", tostring(runErr), outText)
+                        if AgentLoopStatusBadge then
+                            AgentLoopStatusBadge.Text = "🩺 自愈修復中 (Reflexion)..."
+                            AgentLoopStatusBadge.TextColor3 = Color3.fromRGB(255, 120, 120)
                         end
+                        renderActiveSessionChat()
+
+                        local repeatWarning = (consecutiveErrors >= 2) and string.format("\n⚠️ [警報] 此為連續第 %d 次執行出錯！請立即更換實例搜尋方式或調整 API 參數，切勿重複相同呼叫！", consecutiveErrors) or ""
+                        local reflexPrompt = string.format([===[[直譯器原生報錯 / Runtime Traceback]
+報錯訊息: %s
+終端輸出:
+%s%s
+
+[Reflexion 自愈診斷指引]
+直譯器捕獲上述異常堆疊。請在下一輪輸出中：
+1. 在思考過程（Thinking）中診斷該報錯的確切根本原因。
+2. 指明修正方案與禁忌路徑（不可重複相同的無效調用）。
+3. 輸出修正後的完整 ```luau 代碼區塊以自愈推進。]===],
+                            tostring(runErr),
+                            outText,
+                            repeatWarning
+                        )
+
+                        table.insert(cur.history, {
+                            role = "user",
+                            parts = { { text = reflexPrompt } }
+                        })
                     end
-                else
-                    agentMsg.status = "success"
-                    renderActiveSessionChat()
-                    break
                 end
             else
-                agentMsg.status = "success"
+                -- 無可執行代碼：純文本回覆或已完成回答
+                agentMsg.status = "finished"
                 renderActiveSessionChat()
-                break
+                loopDone = true
             end
+
+            -- 歷史長度防爆 (滑動窗口保護)
+            while #cur.history > (Config.MAX_HISTORY * 2) do
+                table.remove(cur.history, 1)
+            end
+            while #cur.history > 0 and cur.history[1].role ~= "user" do
+                table.remove(cur.history, 1)
+            end
+
+            saveSessionsToWorkspace()
+            turn = turn + 1
+            task.wait(0.2)
+            if myExecId ~= currentExecutionId or not isBusy then return end
         end
 
-        saveSessionsToWorkspace()
-        resetBusyState()
+
+        if myExecId == currentExecutionId then
+            saveSessionsToWorkspace()
+            resetBusyState()
+        end
     end)
 end)
 

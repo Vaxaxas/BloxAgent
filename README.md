@@ -21,14 +21,20 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/Vaxaxas/BloxAgent/mai
 ## ✨ 核心特性
 
 - **⚡ Google AI Studio 直連**
-  - 原生支援 `gemini-2.0-flash-exp` 等 Gemini 最新模型系列。
+  - 原生支援 `gemini-2.0-flash` 等 Gemini 最新模型系列。
   - 支援設置思考強度（`Think: Off / Low / Medium / High`）。
-- **🔄 雙軌通信架構 (Dual-Rail Streaming)**
-  - 首選 WebSocket 雙向串流傳輸 (`BidiGenerateContent`)，即時獲取思考鏈與代碼生成。
-  - 當前執行器環境不支援 WebSocket 或握手超時自動降級至 HTTP REST API。
-- **🛡️ 隔離沙盒與看門狗機制 (Sandbox & Watchdog)**
-  - 嚴密隔離環境變數，阻斷對核心程序的非預期修改。
-  - 15 秒非阻塞式看門狗定時器，防止無限 busy-wait 循環導致客戶端無響應。
+- **💻 CodeAct 現代運行時架構 (Code as Actions)**
+  - 動作空間收斂為原生 Luau 程式碼區塊，單步執行包含遍歷、分支與多 API 調用之完整邏輯，減少 30%+ 往返輪次。
+  - **高特權原生執行**：無隔離環境限制，全面釋放 UNC 標準庫（`hookmetamethod`, `getgenv`, `writefile`, `readfile` 等）。
+- **🛡️ 雙軌看門狗防護 (Dual-Track Watchdog)**
+  - 前置靜態無讓步死循環檢測（防止未加 `task.wait` 之緊密迴圈凍結遊戲視窗）。
+  - 非同步心跳守護計時器，超時自動觸發 `task.cancel` 搶佔式終止。
+  - 支援語言虛擬機級指令計數鉤子（`debug.sethook`，上限 $10^7$ 指令）。
+- **🔄 Auto-Compact 上下文自動壓縮治理**
+  - 會話歷史累積至閾值（預設 8 輪）時自動啟動語意提煉壓縮，萃取已驗證環境狀態事實並重置上下文，徹底免疫注意力衰退（Context Rot）。
+- **🩺 Reflexion 結構化自愈修復**
+  - 搭配 ACI 輸出治理（硬性 100 行/4000 字元截斷）與 Traceback 精準去噪堆疊。
+  - 代碼報錯時自動注入因果診斷錨點，強制模型在思考鏈中分析根因並避免重複踩坑。
 - **🧭 原生 AgentEnv 工具庫**
   - `AgentEnv.teleport(target)`：支援坐標、CFrame 或玩家名稱自動定位。
   - `AgentEnv.walkTo(target, options)`：基於 `PathfindingService` 實現自動計算航點、跳躍與避障尋路。
