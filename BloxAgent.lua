@@ -35,7 +35,27 @@ if getgenv and getgenv()._BloxAgentCleanup then
     getgenv()._BloxAgentCleanup = nil
 end
 
-local guiParent = (gethui and gethui()) or (pcall(function() return game:GetService("CoreGui") end) and game:GetService("CoreGui")) or LocalPlayer:WaitForChild("PlayerGui")
+local guiParent = nil
+local guiLocationName = "未知"
+
+if gethui then
+    local okHui, resHui = pcall(gethui)
+    if okHui and resHui then
+        guiParent = resHui
+        guiLocationName = "gethui() [隱蔽 UI 容器，防偵測最佳]"
+    end
+end
+if not guiParent then
+    local okCore, resCore = pcall(function() return game:GetService("CoreGui") end)
+    if okCore and resCore then
+        guiParent = resCore
+        guiLocationName = "CoreGui [系統核心層，防死亡重置]"
+    end
+end
+if not guiParent then
+    guiParent = LocalPlayer:WaitForChild("PlayerGui")
+    guiLocationName = "PlayerGui [本地玩家層，相容保底]"
+end
 local oldGui = guiParent:FindFirstChild("BloxAgent_Framework")
 if oldGui then
     logInfo("Core", "檢測到舊版本 GUI 實例，正在自動清理...")
@@ -108,7 +128,11 @@ local DEFAULT_CONFIG = {
     MAX_AUTO_STEPS = 3,
     AUTO_EXECUTE = true,
     PC_TOGGLE_KEY = "RightControl",
-    GUI_TRANSPARENCY = 0.05
+    GUI_TRANSPARENCY = 0.05,
+    WS_TIMEOUT = 25,           -- WebSocket 等待逾時 (waitStart 判定秒數, 預設 25s)
+    WATCHDOG_TIMEOUT = 20,     -- 沙盒代碼執行防死循環逾時 (秒, 預設 20s)
+    TEMPERATURE = 0.1,         -- 生成溫度 (0.0 ~ 1.0)
+    MAX_OUTPUT_TOKENS = 8192   -- 最大生成 Token 數
 }
 
 local Config = table.clone(DEFAULT_CONFIG)
@@ -996,10 +1020,11 @@ local function callGeminiWebSocket(apiKey, modelName, userPrompt, targetSession,
         return false, "WebSocket 握手發送失敗: " .. tostring(sendErr)
     end
 
+    local timeoutSec = tonumber(Config.WS_TIMEOUT) or 25
     local waitStart = os.clock()
     while not isFinished do
-        if os.clock() - waitStart > 20 then
-            streamError = "WebSocket 響應逾時 (20 秒無數據)"
+        if os.clock() - waitStart > timeoutSec then
+            streamError = string.format("WebSocket 響應逾時 (%d 秒無數據，可在設定中調整)", timeoutSec)
             logWarn("WS", streamError)
             break
         end
@@ -1229,7 +1254,7 @@ local function executeInSandbox(luaCode)
         finished = true
     end)
 
-    local TIMEOUT = 15
+    local TIMEOUT = tonumber(Config.WATCHDOG_TIMEOUT) or 20
     while not finished do
         if os.clock() - lastWatchdogHeartbeat > TIMEOUT then
             if currentCodeThread then
@@ -1237,7 +1262,7 @@ local function executeInSandbox(luaCode)
                 currentCodeThread = nil
             end
             runOk = false
-            runErr = "代碼無響應超過 " .. tostring(TIMEOUT) .. " 秒 (看門狗強制中斷)"
+            runErr = string.format("代碼無響應超過 %d 秒 (看門狗強制中斷，可在設定中調整)", TIMEOUT)
             logWarn("Watchdog", runErr)
             break
         end
@@ -2282,6 +2307,135 @@ for idx, opt in ipairs(TRANS_OPTS) do
         saveConfig()
     end)
 end
+
+-- 7. WebSocket 串流超時 (waitStart 逾時秒數)
+makeSectionHeader("⏱️ WebSocket 串流逾時 (waitStart 超時秒數)", 14)
+local WsTimeoutRow = Instance.new("Frame")
+WsTimeoutRow.Size = UDim2.new(1, 0, 0, 24)
+WsTimeoutRow.BackgroundTransparency = 1
+WsTimeoutRow.LayoutOrder = 15
+WsTimeoutRow.ZIndex = 62
+WsTimeoutRow.Parent = SetScroll
+
+local WS_TIMEOUT_OPTS = { 15, 25, 40, 60 }
+local wsTimeoutButtons = {}
+
+for idx, sec in ipairs(WS_TIMEOUT_OPTS) do
+    local sBtn = Instance.new("TextButton")
+    sBtn.Size = UDim2.new(0.24, -2, 1, 0)
+    sBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
+    local isCur = (tonumber(Config.WS_TIMEOUT) == sec)
+    sBtn.BackgroundColor3 = isCur and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(35, 36, 46)
+    sBtn.Text = tostring(sec) .. " 秒" .. (sec == 25 and " (預設)" or "")
+    sBtn.Font = Enum.Font.GothamMedium
+    sBtn.TextSize = 9
+    sBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+    sBtn.ZIndex = 63
+    sBtn.Parent = WsTimeoutRow
+    Instance.new("UICorner", sBtn).CornerRadius = UDim.new(0, 4)
+    wsTimeoutButtons[sec] = sBtn
+
+    sBtn.MouseButton1Click:Connect(function()
+        Config.WS_TIMEOUT = sec
+        for sVal, b in pairs(wsTimeoutButtons) do
+            local sel = (sVal == sec)
+            b.BackgroundColor3 = sel and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(35, 36, 46)
+            b.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+        end
+        saveConfig()
+    end)
+end
+
+-- 8. 代碼沙盒執行看門狗逾時 (Execution Watchdog Timeout)
+makeSectionHeader("🛡️ 沙盒執行看門狗逾時 (Watchdog 超時秒數)", 16)
+local WatchdogTimeoutRow = Instance.new("Frame")
+WatchdogTimeoutRow.Size = UDim2.new(1, 0, 0, 24)
+WatchdogTimeoutRow.BackgroundTransparency = 1
+WatchdogTimeoutRow.LayoutOrder = 17
+WatchdogTimeoutRow.ZIndex = 62
+WatchdogTimeoutRow.Parent = SetScroll
+
+local WATCHDOG_TIMEOUT_OPTS = { 10, 20, 35, 60 }
+local watchdogButtons = {}
+
+for idx, sec in ipairs(WATCHDOG_TIMEOUT_OPTS) do
+    local wBtn = Instance.new("TextButton")
+    wBtn.Size = UDim2.new(0.24, -2, 1, 0)
+    wBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
+    local isCur = (tonumber(Config.WATCHDOG_TIMEOUT) == sec)
+    wBtn.BackgroundColor3 = isCur and Color3.fromRGB(140, 80, 30) or Color3.fromRGB(35, 36, 46)
+    wBtn.Text = tostring(sec) .. " 秒" .. (sec == 20 and " (預設)" or "")
+    wBtn.Font = Enum.Font.GothamMedium
+    wBtn.TextSize = 9
+    wBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+    wBtn.ZIndex = 63
+    wBtn.Parent = WatchdogTimeoutRow
+    Instance.new("UICorner", wBtn).CornerRadius = UDim.new(0, 4)
+    watchdogButtons[sec] = wBtn
+
+    wBtn.MouseButton1Click:Connect(function()
+        Config.WATCHDOG_TIMEOUT = sec
+        for sVal, b in pairs(watchdogButtons) do
+            local sel = (sVal == sec)
+            b.BackgroundColor3 = sel and Color3.fromRGB(140, 80, 30) or Color3.fromRGB(35, 36, 46)
+            b.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+        end
+        saveConfig()
+    end)
+end
+
+-- 9. 生成溫度 (Temperature)
+makeSectionHeader("🌡️ 生成溫度 (Temperature / 嚴謹 vs 創造力)", 18)
+local TempRow = Instance.new("Frame")
+TempRow.Size = UDim2.new(1, 0, 0, 24)
+TempRow.BackgroundTransparency = 1
+TempRow.LayoutOrder = 19
+TempRow.ZIndex = 62
+TempRow.Parent = SetScroll
+
+local TEMP_OPTS = { { label = "0.0 (精準)", val = 0.0 }, { label = "0.1 (預設)", val = 0.1 }, { label = "0.4", val = 0.4 }, { label = "0.7", val = 0.7 } }
+local tempButtons = {}
+
+for idx, opt in ipairs(TEMP_OPTS) do
+    local tpBtn = Instance.new("TextButton")
+    tpBtn.Size = UDim2.new(0.24, -2, 1, 0)
+    tpBtn.Position = UDim2.new((idx - 1) * 0.25, 0, 0, 0)
+    local isCur = (tonumber(Config.TEMPERATURE) == opt.val)
+    tpBtn.BackgroundColor3 = isCur and Color3.fromRGB(130, 40, 110) or Color3.fromRGB(35, 36, 46)
+    tpBtn.Text = opt.label
+    tpBtn.Font = Enum.Font.GothamMedium
+    tpBtn.TextSize = 9
+    tpBtn.TextColor3 = isCur and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+    tpBtn.ZIndex = 63
+    tpBtn.Parent = TempRow
+    Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 4)
+    tempButtons[opt.val] = tpBtn
+
+    tpBtn.MouseButton1Click:Connect(function()
+        Config.TEMPERATURE = opt.val
+        for tVal, b in pairs(tempButtons) do
+            local sel = (tVal == opt.val)
+            b.BackgroundColor3 = sel and Color3.fromRGB(130, 40, 110) or Color3.fromRGB(35, 36, 46)
+            b.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 185, 200)
+        end
+        saveConfig()
+    end)
+end
+
+-- 10. 當前 GUI 掛載層級提示 (GUI Location Banner)
+makeSectionHeader("🛡️ 當前環境掛載層級 (GUI Environment)", 20)
+local GuiMountBanner = Instance.new("TextLabel")
+GuiMountBanner.Size = UDim2.new(1, 0, 0, 26)
+GuiMountBanner.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
+GuiMountBanner.Text = "  掛載容器: " .. tostring(guiLocationName)
+GuiMountBanner.Font = Enum.Font.Code
+GuiMountBanner.TextSize = 10
+GuiMountBanner.TextColor3 = Color3.fromRGB(120, 220, 255)
+GuiMountBanner.TextXAlignment = Enum.TextXAlignment.Left
+GuiMountBanner.LayoutOrder = 21
+GuiMountBanner.ZIndex = 62
+GuiMountBanner.Parent = SetScroll
+Instance.new("UICorner", GuiMountBanner).CornerRadius = UDim.new(0, 4)
 
 SettingsBtn.MouseButton1Click:Connect(function()
     SettingsModal.Visible = not SettingsModal.Visible
